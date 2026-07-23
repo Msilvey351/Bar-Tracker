@@ -1,0 +1,13 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --foreground-rgb: 255, 255, 255;
+}
+
+body {
+  background: #0f0f0f;
+  color: rgb(var(--foreground-rgb));
+  font-family: system-ui, -apple-system, sans-serif;
+}
