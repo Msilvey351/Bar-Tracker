@@ -2,27 +2,26 @@ import type { FrameResult, VelocityFrame, Phase, RepStats } from "@/types";
 
 // ─── Tuning ───────────────────────────────────────────────────────────────────
 
-/** Wide smoothing for speed magnitude — kills noise, keeps rep shape */
+/** Smoothing for speed magnitude display */
 const SMOOTH_WINDOW = 15;
 
-/** Even wider smoothing for direction signal — prevents mid-rep phase flips */
+/** Wide smoothing for the signed Y signal used for rep detection */
 const DIR_SMOOTH_WINDOW = 25;
 
-/** Speed must exceed this fraction of global peak to count as "moving" */
+/** Fraction of global peak speed below which a frame is "at rest" */
 const MOVING_FRACTION = 0.08;
 
-/** Minimum number of frames between two peaks (prevents double-counting
- *  one rep as two). At 30fps, 20 frames = ~0.67s minimum rep duration. */
-const MIN_PEAK_SEPARATION_FRAMES = 20;
+/** Minimum frames between a concentric peak and the next eccentric peak
+ *  (prevents same rep's two humps being split). At 30fps = ~0.5s */
+const MIN_HALF_REP_FRAMES = 15;
 
-/** A peak must be at least this fraction of the median peak height
- *  to be counted as a real rep (filters unrack/rerack and noise peaks) */
-const MIN_PEAK_VS_MEDIAN = 0.45;
+/** A rep's concentric peak must be >= this fraction of median concentric peak */
+const MIN_REP_VS_MEDIAN = 0.40;
 
-/** Minimum frames on each side of a peak to assign phase labels */
-const MIN_PHASE_FRAMES = 5;
+/** Minimum frames for a valid rep */
+const MIN_REP_FRAMES = 12;
 
-// ─── Maths helpers ────────────────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function boxSmooth(values: number[], window: number): number[] {
   const half = Math.floor(window / 2);
@@ -41,36 +40,38 @@ function median(values: number[]): number {
   return s.length % 2 !== 0 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
 }
 
-/** Find local maxima in `values` that are separated by at least
- *  `minSep` frames and exceed `minHeight`. */
+/**
+ * Find local maxima in `signal` that are:
+ *  - above `minHeight`
+ *  - separated by at least `minSep` frames from any higher value
+ */
 function findPeaks(
-  values:    number[],
+  signal:    number[],
   minSep:    number,
   minHeight: number
 ): number[] {
   const peaks: number[] = [];
-
-  for (let i = 1; i < values.length - 1; i++) {
-    if (values[i] <= minHeight) continue;
-    if (values[i] < values[i - 1] || values[i] < values[i + 1]) continue;
-
-    // Local maximum — check it's higher than neighbours within minSep
+  for (let i = 1; i < signal.length - 1; i++) {
+    if (signal[i] <= minHeight) continue;
+    if (signal[i] < signal[i - 1] || signal[i] < signal[i + 1]) continue;
     let isMax = true;
-    for (let j = Math.max(0, i - minSep); j <= Math.min(values.length - 1, i + minSep); j++) {
-      if (j !== i && values[j] >= values[i]) { isMax = false; break; }
+    for (
+      let j = Math.max(0, i - minSep);
+      j <= Math.min(signal.length - 1, i + minSep);
+      j++
+    ) {
+      if (j !== i && signal[j] >= signal[i]) { isMax = false; break; }
     }
     if (isMax) peaks.push(i);
   }
-
   return peaks;
 }
 
-/** Find the valley (minimum) index between two peak frame indices */
-function findValley(values: number[], from: number, to: number): number {
-  let minVal = Infinity;
-  let minIdx = from;
+/** Index of minimum value between two indices (inclusive) */
+function valleyBetween(signal: number[], from: number, to: number): number {
+  let minVal = Infinity, minIdx = from;
   for (let i = from; i <= to; i++) {
-    if (values[i] < minVal) { minVal = values[i]; minIdx = i; }
+    if (signal[i] < minVal) { minVal = signal[i]; minIdx = i; }
   }
   return minIdx;
 }
@@ -83,110 +84,182 @@ export function buildVelocityFrames(
 ): VelocityFrame[] {
   if (frames.length < 2) return [];
 
-  const dt          = 1 / fps;
-  const rawSpeeds   = [0];
-  const rawVY       = [0];
+  const dt        = 1 / fps;
+  const rawSpeed  = [0];
+  const rawVY     = [0];
 
   for (let i = 1; i < frames.length; i++) {
     const dx = frames[i].position.x - frames[i - 1].position.x;
     const dy = frames[i].position.y - frames[i - 1].position.y;
-    rawSpeeds.push(Math.sqrt(dx * dx + dy * dy) / dt);
-    rawVY.push(dy / dt);
+    rawSpeed.push(Math.sqrt(dx * dx + dy * dy) / dt);
+    rawVY.push(dy / dt);   // +ve = bar moving DOWN in image
   }
 
-  const smoothedSpeeds = boxSmooth(rawSpeeds, SMOOTH_WINDOW);
-  const smoothedVY     = boxSmooth(rawVY,     DIR_SMOOTH_WINDOW);
+  const smoothSpeed = boxSmooth(rawSpeed, SMOOTH_WINDOW);
+  const smoothVY    = boxSmooth(rawVY,    DIR_SMOOTH_WINDOW);
 
   return frames.map((f, i) => ({
     frameIndex:       f.frameIndex,
     timeSeconds:      f.timeSeconds,
     position:         f.position,
-    velocityRaw:      rawSpeeds[i],
-    velocitySmoothed: smoothedSpeeds[i],
-    velocityY:        smoothedVY[i],
+    velocityRaw:      rawSpeed[i],
+    velocitySmoothed: smoothSpeed[i],
+    velocityY:        smoothVY[i],
     phase:            "rest" as Phase,
     repIndex:         null,
   }));
 }
 
-// ─── Step 2: Detect concentric direction ─────────────────────────────────────
+// ─── Step 2: Determine concentric direction ───────────────────────────────────
 
 function getConcentricSign(
-  vFrames:          VelocityFrame[],
-  movingThreshold:  number
+  vFrames:   VelocityFrame[],
+  threshold: number
 ): 1 | -1 {
-  const moving   = vFrames.filter((f) => f.velocitySmoothed > movingThreshold);
+  const moving   = vFrames.filter((f) => f.velocitySmoothed > threshold);
   const up       = moving.filter((f) => f.velocityY < 0);
   const down     = moving.filter((f) => f.velocityY > 0);
   const meanUp   = up.length
     ? up.reduce((s, f) => s + Math.abs(f.velocityY), 0) / up.length : 0;
   const meanDown = down.length
     ? down.reduce((s, f) => s + Math.abs(f.velocityY), 0) / down.length : 0;
-  // -1 → bar going UP = concentric (squat / bench)
-  // +1 → bar going DOWN = concentric (deadlift)
+  // -1 → moving UP in image = concentric (squat / bench)
+  // +1 → moving DOWN in image = concentric (deadlift)
   return meanUp >= meanDown ? -1 : 1;
 }
 
-// ─── Step 3: Find rep peaks and segment ──────────────────────────────────────
+// ─── Step 3: Detect reps using SIGNED velocity peaks ─────────────────────────
 //
-// PRIMARY STRATEGY: treat each local maximum in the smoothed speed signal
-// as the centre of one rep. Valley points between adjacent peaks become
-// the rep boundaries. This is robust to reps that don't have a full stop
-// between them (which breaks rest-gap detection).
+// KEY FIX: instead of finding peaks in |speed| (which gives 2 peaks per rep —
+// one eccentric, one concentric), we find peaks in the SIGNED Y velocity.
+// Concentric produces a peak in one direction, eccentric in the other.
+// Pairing adjacent opposite-sign peaks = one rep.
 
 export function detectPhasesAndReps(vFrames: VelocityFrame[]): VelocityFrame[] {
   const result          = vFrames.map((f) => ({ ...f }));
   const speeds          = result.map((f) => f.velocitySmoothed);
+  const signedVY        = result.map((f) => f.velocityY);
   const globalPeak      = Math.max(...speeds, 1);
   const movingThreshold = globalPeak * MOVING_FRACTION;
   const concentricSign  = getConcentricSign(result, movingThreshold);
 
-  // ── 3a. Find all candidate peaks ─────────────────────────────────────────
-  const candidatePeaks = findPeaks(
-    speeds,
-    MIN_PEAK_SEPARATION_FRAMES,
-    movingThreshold * 2   // peaks must be well above noise floor
+  // Build signed concentric velocity signal:
+  // positive where bar moves concentrically, negative where eccentric,
+  // zero where at rest.
+  // concentricSign = -1 → concentric = negative velocityY (bar going up)
+  //   so concentric signal = -velocityY (positive when going up)
+  // concentricSign = +1 → concentric = positive velocityY (bar going down)
+  //   so concentric signal = +velocityY
+  const concSignal = signedVY.map((vy, i) =>
+    speeds[i] < movingThreshold ? 0 : -concentricSign * vy
+  );
+  // concSignal > 0 → concentric movement
+  // concSignal < 0 → eccentric movement
+
+  // ── 3a. Find concentric peaks (positive peaks in concSignal) ─────────────
+  const concPeakSignal = concSignal.map((v) => Math.max(v, 0));
+  const concPeaks = findPeaks(
+    concPeakSignal,
+    MIN_HALF_REP_FRAMES,
+    movingThreshold
   );
 
-  if (candidatePeaks.length === 0) return result;
+  // ── 3b. Find eccentric peaks (negative → flip sign, find peaks) ──────────
+  const eccPeakSignal = concSignal.map((v) => Math.max(-v, 0));
+  const eccPeaks = findPeaks(
+    eccPeakSignal,
+    MIN_HALF_REP_FRAMES,
+    movingThreshold
+  );
 
-  // ── 3b. Filter peaks by median height (removes unrack/rerack) ───────────
-  const peakHeights  = candidatePeaks.map((i) => speeds[i]);
-  const medianHeight = median(peakHeights);
-  const minPeakH     = medianHeight * MIN_PEAK_VS_MEDIAN;
+  if (concPeaks.length === 0) return result;
 
-  const realPeaks = candidatePeaks.filter((i) => speeds[i] >= minPeakH);
+  // ── 3c. Filter concentric peaks by median height ──────────────────────────
+  const concHeights  = concPeaks.map((i) => concPeakSignal[i]);
+  const medConc      = median(concHeights);
+  const minConcPeak  = medConc * MIN_REP_VS_MEDIAN;
+  const realConcPeaks = concPeaks.filter((i) => concPeakSignal[i] >= minConcPeak);
 
-  if (realPeaks.length === 0) return result;
+  if (realConcPeaks.length === 0) return result;
 
-  // ── 3c. Find valley boundaries between consecutive peaks ─────────────────
-  //  boundaries[0]   = left edge of rep 0  (start of movement or first valley)
-  //  boundaries[k]   = valley between rep k-1 and rep k
-  //  boundaries[n]   = right edge of last rep
+  // ── 3d. Pair each concentric peak with its nearest eccentric peak ─────────
+  // A rep = one eccentric phase + one concentric phase.
+  // For squat/bench: eccentric comes BEFORE concentric.
+  // For deadlift:    concentric comes BEFORE eccentric.
+  // We pair by finding the closest eccentric peak to each concentric peak
+  // on the expected side.
 
-  const boundaries: number[] = [];
-
-  // Left boundary — valley from index 0 to first peak
-  boundaries.push(findValley(speeds, 0, realPeaks[0]));
-
-  // Between consecutive peaks
-  for (let p = 0; p < realPeaks.length - 1; p++) {
-    boundaries.push(findValley(speeds, realPeaks[p], realPeaks[p + 1]));
+  interface RepPair {
+    eccIdx:  number;  // frame index of eccentric peak
+    concIdx: number;  // frame index of concentric peak
+    start:   number;  // frame index of rep start
+    end:     number;  // frame index of rep end
   }
 
-  // Right boundary — valley from last peak to end
-  boundaries.push(findValley(speeds, realPeaks[realPeaks.length - 1], speeds.length - 1));
+  const pairs: RepPair[] = [];
+  const usedEcc = new Set<number>();
 
-  // ── 3d. Assign repIndex and phase to each frame ───────────────────────────
-  for (let r = 0; r < realPeaks.length; r++) {
-    const repStart = boundaries[r];
-    const repEnd   = boundaries[r + 1];
-    const peakIdx  = realPeaks[r];
+  for (const ci of realConcPeaks) {
+    // Find the closest eccentric peak that hasn't been used yet
+    // For squat/bench (concentricSign = -1), eccentric is BEFORE concentric
+    // For deadlift   (concentricSign = +1), eccentric is AFTER concentric
+    const expectedBefore = concentricSign === -1;
 
-    for (let i = repStart; i < repEnd; i++) {
+    let bestEcc   = -1;
+    let bestDist  = Infinity;
+
+    for (const ei of eccPeaks) {
+      if (usedEcc.has(ei)) continue;
+      const isBefore = ei < ci;
+      if (expectedBefore !== isBefore) continue;
+      const dist = Math.abs(ei - ci);
+      if (dist < bestDist && dist <= MIN_HALF_REP_FRAMES * 8) {
+        bestDist = dist;
+        bestEcc  = ei;
+      }
+    }
+
+    if (bestEcc === -1) {
+      // No eccentric partner found — still count it as a rep (conc-only)
+      pairs.push({ eccIdx: -1, concIdx: ci, start: ci, end: ci });
+    } else {
+      usedEcc.add(bestEcc);
+      const repStart = Math.min(bestEcc, ci);
+      const repEnd   = Math.max(bestEcc, ci);
+      pairs.push({ eccIdx: bestEcc, concIdx: ci, start: repStart, end: repEnd });
+    }
+  }
+
+  // ── 3e. Assign frame boundaries using valleys ─────────────────────────────
+  // Sort pairs by time
+  pairs.sort((a, b) => a.start - b.start);
+
+  // For each pair, determine the rep's frame range using valleys in speed
+  interface RepBounds {
+    frameStart: number;
+    frameEnd:   number;
+    concIdx:    number;
+    eccIdx:     number;
+  }
+
+  const repBounds: RepBounds[] = pairs.map((p, pi) => {
+    const prevEnd   = pi > 0 ? pairs[pi - 1].end : 0;
+    const nextStart = pi < pairs.length - 1 ? pairs[pi + 1].start : speeds.length - 1;
+
+    // Frame start = valley between previous rep end and this rep start
+    const frameStart = valleyBetween(speeds, prevEnd, p.start);
+    // Frame end = valley between this rep end and next rep start
+    const frameEnd   = valleyBetween(speeds, p.end, nextStart);
+
+    return { frameStart, frameEnd, concIdx: p.concIdx, eccIdx: p.eccIdx };
+  });
+
+  // ── 3f. Label frames ──────────────────────────────────────────────────────
+  for (let r = 0; r < repBounds.length; r++) {
+    const { frameStart, frameEnd } = repBounds[r];
+
+    for (let i = frameStart; i <= frameEnd; i++) {
       const f = result[i];
-
-      // Frames below moving threshold = rest (between sets)
       if (f.velocitySmoothed < movingThreshold) {
         f.phase    = "rest";
         f.repIndex = null;
@@ -194,22 +267,13 @@ export function detectPhasesAndReps(vFrames: VelocityFrame[]): VelocityFrame[] {
       }
 
       f.repIndex = r;
-
-      // Phase labelling:
-      // Before the speed peak → approaching peak → first half of rep
-      // After the speed peak  → decelerating   → second half of rep
-      //
-      // Which half is concentric depends on concentricSign + direction of
-      // bar travel (velocityY sign).
-      //
-      // We use the actual Y-direction at each frame, not position relative
-      // to peak — this handles asymmetric reps and pauses correctly.
+      // Use actual signed direction for phase label
       const isConc = concentricSign * f.velocityY < 0;
       f.phase = isConc ? "concentric" : "eccentric";
     }
   }
 
-  // ── 3e. Clean up short glitch segments ───────────────────────────────────
+  // ── 3g. Clean up tiny phase glitches ─────────────────────────────────────
   let changed = true;
   while (changed) {
     changed = false;
@@ -219,15 +283,13 @@ export function detectPhasesAndReps(vFrames: VelocityFrame[]): VelocityFrame[] {
       let j = i;
       while (j < result.length && result[j].phase === phase) j++;
 
-      if (phase !== "rest" && j - i < MIN_PHASE_FRAMES) {
-        const prevPhase = i > 0             ? result[i - 1].phase : "rest";
-        const nextPhase = j < result.length ? result[j].phase     : "rest";
-        const fill =
-          prevPhase !== "rest" ? prevPhase :
-          nextPhase !== "rest" ? nextPhase : "rest";
+      if (phase !== "rest" && j - i < 5) {
+        const prev = i > 0             ? result[i - 1].phase : "rest";
+        const next = j < result.length ? result[j].phase     : "rest";
+        const fill = prev !== "rest" ? prev : next !== "rest" ? next : "rest";
         for (let k = i; k < j; k++) {
           result[k].phase    = fill;
-          result[k].repIndex = fill === "rest" ? null : result[k].repIndex;
+          if (fill === "rest") result[k].repIndex = null;
         }
         changed = true;
       }
@@ -249,21 +311,19 @@ export function computeRepStats(vFrames: VelocityFrame[]): RepStats[] {
   }
 
   const avg  = (arr: VelocityFrame[]) =>
-    arr.length
-      ? arr.reduce((s, f) => s + f.velocitySmoothed, 0) / arr.length
-      : 0;
+    arr.length ? arr.reduce((s, f) => s + f.velocitySmoothed, 0) / arr.length : 0;
   const peak = (arr: VelocityFrame[]) =>
     arr.length ? Math.max(...arr.map((f) => f.velocitySmoothed)) : 0;
   const dur  = (arr: VelocityFrame[]) =>
-    arr.length > 1
-      ? arr[arr.length - 1].timeSeconds - arr[0].timeSeconds
-      : 0;
+    arr.length > 1 ? arr[arr.length - 1].timeSeconds - arr[0].timeSeconds : 0;
 
+  // Filter out reps without concentric frames or too short
   const stats: RepStats[] = [];
-
   repMap.forEach((frames, repIdx) => {
     const concFrames = frames.filter((f) => f.phase === "concentric");
     const eccFrames  = frames.filter((f) => f.phase === "eccentric");
+    if (frames.length < MIN_REP_FRAMES) return;
+    if (concFrames.length === 0) return;
     stats.push({
       repNumber:              repIdx + 1,
       avgConcentricVelocity:  avg(concFrames),
@@ -275,7 +335,9 @@ export function computeRepStats(vFrames: VelocityFrame[]): RepStats[] {
     });
   });
 
+  // Renumber sequentially after filtering
   stats.sort((a, b) => a.repNumber - b.repNumber);
+  stats.forEach((s, i) => { s.repNumber = i + 1; });
 
   // % drop vs rep 1
   const rep1Peak = stats[0]?.peakConcentricVelocity ?? 1;
