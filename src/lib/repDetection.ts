@@ -454,7 +454,7 @@ export function detectPhasesAndReps(vFrames: VelocityFrame[]): VelocityFrame[] {
 
   if (!candidates.length) return result;
 
-  const concentricDir = inferConcentricDirection(candidates);
+  const concentricDir: -1 | 1 = -1;
 
   candidates.forEach((candidate, repIdx) => {
     for (let i = candidate.start; i <= candidate.end; i++) {
