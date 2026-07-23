@@ -2,33 +2,18 @@ import type { FrameResult, VelocityFrame, Phase, RepStats } from "@/types";
 
 // ─── Tuning ───────────────────────────────────────────────────────────────────
 
-/** Smoothing window for speed magnitude */
-const SMOOTH_WINDOW = 15;
+const SMOOTH_WINDOW                = 15;
+const DIR_SMOOTH_WINDOW            = 25;
+const MOVING_FRACTION              = 0.08;
+const MIN_HALF_REP_FRAMES          = 15;
+const MIN_REP_VS_MEDIAN            = 0.40;
+const MIN_REP_FRAMES               = 12;
+const MIN_VERTICAL_RANGE_FRACTION  = 0.50;
+const EDGE_TRIM_FRACTION           = 0.65;
 
-/** Wider smoothing for direction signal — prevents mid-rep phase flips */
-const DIR_SMOOTH_WINDOW = 25;
-
-/** Fraction of global peak speed below which a frame is "at rest" */
-const MOVING_FRACTION = 0.08;
-
-/** Minimum frames between two peaks of the same sign.
- *  At 30fps, 15 frames ≈ 0.5s minimum half-rep duration. */
-const MIN_HALF_REP_FRAMES = 15;
-
-/** A rep's concentric peak must be >= this fraction of the median
- *  concentric peak across all candidate reps. */
-const MIN_REP_VS_MEDIAN = 0.40;
-
-/** Minimum total frames for a valid rep */
-const MIN_REP_FRAMES = 12;
-
-/** A rep must have vertical bar travel >= this fraction of the median
- *  vertical range. Filters racking movements (mostly horizontal). */
-const MIN_VERTICAL_RANGE_FRACTION = 0.50;
-
-/** Edge reps (first/last) are trimmed if their peak concentric velocity
- *  is below this fraction of the INNER reps' median peak. */
-const EDGE_TRIM_FRACTION = 0.65;
+/** Frames within a rep that occur before the bar reaches this fraction
+ *  of the rep's own peak speed are trimmed as false-start noise */
+const REP_START_SPEED_FRACTION = 0.25;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -49,10 +34,6 @@ function median(values: number[]): number {
   return s.length % 2 !== 0 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
 }
 
-/**
- * Find local maxima in `signal` separated by at least `minSep` frames
- * and exceeding `minHeight`.
- */
 function findPeaks(
   signal:    number[],
   minSep:    number,
@@ -75,7 +56,6 @@ function findPeaks(
   return peaks;
 }
 
-/** Index of minimum value in `signal` between `from` and `to` inclusive */
 function valleyBetween(signal: number[], from: number, to: number): number {
   let minVal = Infinity;
   let minIdx = from;
@@ -85,11 +65,6 @@ function valleyBetween(signal: number[], from: number, to: number): number {
   return minIdx;
 }
 
-/**
- * Vertical range (max Y − min Y) of original tracked positions
- * for a set of VelocityFrames. Large = real rep with full ROM.
- * Small = racking movement (mostly horizontal, little vertical travel).
- */
 function verticalRange(
   repVFrames: VelocityFrame[],
   allFrames:  FrameResult[]
@@ -118,7 +93,7 @@ export function buildVelocityFrames(
     const dx = frames[i].position.x - frames[i - 1].position.x;
     const dy = frames[i].position.y - frames[i - 1].position.y;
     rawSpeed.push(Math.sqrt(dx * dx + dy * dy) / dt);
-    rawVY.push(dy / dt); // positive = bar moving DOWN in image coords
+    rawVY.push(dy / dt);
   }
 
   const smoothSpeed = boxSmooth(rawSpeed, SMOOTH_WINDOW);
@@ -136,7 +111,7 @@ export function buildVelocityFrames(
   }));
 }
 
-// ─── Step 2: Determine concentric direction ───────────────────────────────────
+// ─── Step 2: Concentric direction ────────────────────────────────────────────
 
 function getConcentricSign(
   vFrames:   VelocityFrame[],
@@ -149,17 +124,10 @@ function getConcentricSign(
     ? up.reduce((s, f) => s + Math.abs(f.velocityY), 0) / up.length : 0;
   const meanDown = down.length
     ? down.reduce((s, f) => s + Math.abs(f.velocityY), 0) / down.length : 0;
-  // -1 → bar going UP = concentric (squat / bench press)
-  // +1 → bar going DOWN = concentric (deadlift)
   return meanUp >= meanDown ? -1 : 1;
 }
 
 // ─── Step 3: Detect phases and segment reps ───────────────────────────────────
-//
-// Uses SIGNED velocity peaks rather than magnitude peaks.
-// Each concentric peak is paired with its nearest eccentric peak
-// to form one rep. This prevents eccentric and concentric phases
-// of the same rep being counted as separate reps.
 
 export function detectPhasesAndReps(vFrames: VelocityFrame[]): VelocityFrame[] {
   const result          = vFrames.map((f) => ({ ...f }));
@@ -168,58 +136,45 @@ export function detectPhasesAndReps(vFrames: VelocityFrame[]): VelocityFrame[] {
   const movingThreshold = globalPeak * MOVING_FRACTION;
   const concentricSign  = getConcentricSign(result, movingThreshold);
 
-  // Build signed concentric signal:
-  // positive where moving concentrically, negative where eccentric, 0 at rest
   const concSignal = result.map((f, i) =>
     speeds[i] < movingThreshold ? 0 : -concentricSign * f.velocityY
   );
 
-  // Find concentric peaks (positive humps)
-  const concPeakSig  = concSignal.map((v) => Math.max(v, 0));
-  const concPeaks    = findPeaks(concPeakSig, MIN_HALF_REP_FRAMES, movingThreshold);
-
-  // Find eccentric peaks (flip negatives to find their peaks)
-  const eccPeakSig   = concSignal.map((v) => Math.max(-v, 0));
-  const eccPeaks     = findPeaks(eccPeakSig, MIN_HALF_REP_FRAMES, movingThreshold);
+  const concPeakSig   = concSignal.map((v) => Math.max(v, 0));
+  const eccPeakSig    = concSignal.map((v) => Math.max(-v, 0));
+  const concPeaks     = findPeaks(concPeakSig, MIN_HALF_REP_FRAMES, movingThreshold);
+  const eccPeaks      = findPeaks(eccPeakSig,  MIN_HALF_REP_FRAMES, movingThreshold);
 
   if (concPeaks.length === 0) return result;
 
-  // Filter concentric peaks by median height
   const concHeights   = concPeaks.map((i) => concPeakSig[i]);
   const medConc       = median(concHeights);
   const minConcH      = medConc * MIN_REP_VS_MEDIAN;
   const realConcPeaks = concPeaks.filter((i) => concPeakSig[i] >= minConcH);
   if (realConcPeaks.length === 0) return result;
 
-  // ── Pair concentric peaks with eccentric peaks ────────────────────────────
-  // For squat/bench (concentricSign = -1): eccentric comes BEFORE concentric
-  // For deadlift   (concentricSign = +1): eccentric comes AFTER concentric
   interface RepPair {
-    eccIdx:  number; // -1 if no partner found
+    eccIdx:  number;
     concIdx: number;
     start:   number;
     end:     number;
   }
 
-  const pairs:   RepPair[]   = [];
-  const usedEcc: Set<number> = new Set();
-  const eccBeforeConc        = concentricSign === -1;
+  const pairs:       RepPair[]   = [];
+  const usedEcc:     Set<number> = new Set();
+  const eccBeforeConc            = concentricSign === -1;
 
   for (const ci of realConcPeaks) {
     let bestEcc  = -1;
     let bestDist = Infinity;
-
     for (const ei of eccPeaks) {
       if (usedEcc.has(ei)) continue;
-      // Must be on the correct side
       if ((ei < ci) !== eccBeforeConc) continue;
       const dist = Math.abs(ei - ci);
       if (dist < bestDist && dist <= MIN_HALF_REP_FRAMES * 8) {
-        bestDist = dist;
-        bestEcc  = ei;
+        bestDist = dist; bestEcc = ei;
       }
     }
-
     if (bestEcc !== -1) usedEcc.add(bestEcc);
     const repStart = bestEcc === -1 ? ci : Math.min(bestEcc, ci);
     const repEnd   = bestEcc === -1 ? ci : Math.max(bestEcc, ci);
@@ -228,7 +183,6 @@ export function detectPhasesAndReps(vFrames: VelocityFrame[]): VelocityFrame[] {
 
   pairs.sort((a, b) => a.start - b.start);
 
-  // ── Assign frame boundaries using speed valleys ───────────────────────────
   const repBounds = pairs.map((p, pi) => {
     const prevEnd   = pi > 0              ? pairs[pi - 1].end   : 0;
     const nextStart = pi < pairs.length-1 ? pairs[pi + 1].start : speeds.length - 1;
@@ -238,7 +192,7 @@ export function detectPhasesAndReps(vFrames: VelocityFrame[]): VelocityFrame[] {
     };
   });
 
-  // ── Label each frame with repIndex and phase ──────────────────────────────
+  // Label frames
   for (let r = 0; r < repBounds.length; r++) {
     const { frameStart, frameEnd } = repBounds[r];
     for (let i = frameStart; i <= frameEnd; i++) {
@@ -251,7 +205,7 @@ export function detectPhasesAndReps(vFrames: VelocityFrame[]): VelocityFrame[] {
     }
   }
 
-  // ── Merge short glitch phase segments into neighbours ────────────────────
+  // Clean up short glitch segments
   let changed = true;
   while (changed) {
     changed = false;
@@ -277,7 +231,57 @@ export function detectPhasesAndReps(vFrames: VelocityFrame[]): VelocityFrame[] {
   return result;
 }
 
-// ─── Step 4: Filter fake reps + renumber ─────────────────────────────────────
+// ─── Step 4: Trim false starts within each rep ────────────────────────────────
+//
+// The unrack blip gets merged into the start of Rep 1 because valleyBetween
+// sets the rep boundary to near frame 0, and the unrack sits in that range.
+// For each rep, we find the first frame where the bar is moving at
+// REP_START_SPEED_FRACTION of that rep's own peak speed, and discard
+// everything before it. This surgically removes the unrack from Rep 1
+// and the rerack from the last rep without affecting middle reps.
+
+function trimRepFalseStarts(vFrames: VelocityFrame[]): VelocityFrame[] {
+  const result = vFrames.map((f) => ({ ...f }));
+
+  const repIndices = [
+    ...new Set(
+      result.map((f) => f.repIndex).filter((r): r is number => r !== null)
+    ),
+  ].sort((a, b) => a - b);
+
+  for (const repIdx of repIndices) {
+    const repFrames = result.filter((f) => f.repIndex === repIdx);
+    if (repFrames.length === 0) continue;
+
+    const peakSpeed = Math.max(...repFrames.map((f) => f.velocitySmoothed));
+    const minSpeed  = peakSpeed * REP_START_SPEED_FRACTION;
+
+    // Find first frame where bar is genuinely moving fast enough
+    const firstRealFrame = repFrames.find((f) => f.velocitySmoothed >= minSpeed);
+    if (!firstRealFrame) continue;
+
+    const cutoffTime = firstRealFrame.timeSeconds;
+
+    // Also find last frame where bar is moving fast enough (trims rerack end)
+    const lastRealFrame = [...repFrames].reverse().find(
+      (f) => f.velocitySmoothed >= minSpeed
+    );
+    const endCutoffTime = lastRealFrame?.timeSeconds ?? Infinity;
+
+    // Reset frames outside [cutoffTime, endCutoffTime] to rest
+    for (const f of result) {
+      if (f.repIndex !== repIdx) continue;
+      if (f.timeSeconds < cutoffTime || f.timeSeconds > endCutoffTime) {
+        f.phase    = "rest";
+        f.repIndex = null;
+      }
+    }
+  }
+
+  return result;
+}
+
+// ─── Step 5: Filter fake reps + renumber ─────────────────────────────────────
 
 interface RepMetrics {
   idx:         number;
@@ -302,7 +306,6 @@ export function filterAndRenumber(
 
   if (allRepIdx.length === 0) return result;
 
-  // ── Build per-rep metrics ─────────────────────────────────────────────────
   const metrics: RepMetrics[] = allRepIdx.map((idx) => {
     const frames     = result.filter((f) => f.repIndex === idx);
     const concFrames = frames.filter((f) => f.phase === "concentric");
@@ -318,27 +321,25 @@ export function filterAndRenumber(
     };
   });
 
-  // ── Pass 1: Basic validity ────────────────────────────────────────────────
+  // Pass 1: basic validity
   const basicValid = metrics.filter(
     (m) => m.totalFrames >= MIN_REP_FRAMES && m.concFrames.length > 0
   );
   if (basicValid.length === 0) return result;
 
-  // ── Pass 2: Vertical range filter (kills racking movements) ──────────────
+  // Pass 2: vertical range
   const medVertRange = median(basicValid.map((m) => m.vertRange));
   const minVertRange = medVertRange * MIN_VERTICAL_RANGE_FRACTION;
   const rangeValid   = basicValid.filter((m) => m.vertRange >= minVertRange);
   if (rangeValid.length === 0) return result;
 
-  // ── Pass 3: Peak velocity filter (kills noise / glitch reps) ─────────────
+  // Pass 3: peak velocity
   const medPeak   = median(rangeValid.map((m) => m.peakConc));
   const minPeak   = medPeak * MIN_REP_VS_MEDIAN;
   const peakValid = rangeValid.filter((m) => m.peakConc >= minPeak);
   if (peakValid.length === 0) return result;
 
-  // ── Pass 4: Edge trim — removes unrack / rerack ───────────────────────────
-  // Compares first/last rep against INNER reps' median.
-  // Repeats up to 3 times to handle multiple bad edge reps.
+  // Pass 4: edge trim
   let edgeFiltered = [...peakValid];
 
   const trimEdges = (reps: RepMetrics[]): RepMetrics[] => {
@@ -346,13 +347,10 @@ export function filterAndRenumber(
     const inner       = reps.slice(1, -1);
     const innerMedian = median(inner.map((m) => m.peakConc));
     const minEdgePeak = innerMedian * EDGE_TRIM_FRACTION;
-    let   trimmed     = [...reps];
-
-    // Trim from front
+    let trimmed       = [...reps];
     while (trimmed.length > 1 && trimmed[0].peakConc < minEdgePeak) {
       trimmed = trimmed.slice(1);
     }
-    // Trim from back
     while (trimmed.length > 1 && trimmed[trimmed.length - 1].peakConc < minEdgePeak) {
       trimmed = trimmed.slice(0, -1);
     }
@@ -365,7 +363,7 @@ export function filterAndRenumber(
     edgeFiltered = trimmed;
   }
 
-  // ── Renumber sequentially ─────────────────────────────────────────────────
+  // Renumber
   const validSet = new Set(edgeFiltered.map((m) => m.idx));
   const sorted   = [...validSet].sort((a, b) => a - b);
   const remap    = new Map(sorted.map((old, i) => [old, i]));
@@ -382,7 +380,7 @@ export function filterAndRenumber(
   return result;
 }
 
-// ─── Step 5: Per-rep statistics ───────────────────────────────────────────────
+// ─── Step 6: Per-rep statistics ───────────────────────────────────────────────
 
 export function computeRepStats(vFrames: VelocityFrame[]): RepStats[] {
   const repMap = new Map<number, VelocityFrame[]>();
@@ -393,18 +391,13 @@ export function computeRepStats(vFrames: VelocityFrame[]): RepStats[] {
   }
 
   const avg  = (arr: VelocityFrame[]) =>
-    arr.length
-      ? arr.reduce((s, f) => s + f.velocitySmoothed, 0) / arr.length
-      : 0;
+    arr.length ? arr.reduce((s, f) => s + f.velocitySmoothed, 0) / arr.length : 0;
   const peak = (arr: VelocityFrame[]) =>
     arr.length ? Math.max(...arr.map((f) => f.velocitySmoothed)) : 0;
   const dur  = (arr: VelocityFrame[]) =>
-    arr.length > 1
-      ? arr[arr.length - 1].timeSeconds - arr[0].timeSeconds
-      : 0;
+    arr.length > 1 ? arr[arr.length - 1].timeSeconds - arr[0].timeSeconds : 0;
 
   const stats: RepStats[] = [];
-
   repMap.forEach((frames, repIdx) => {
     const concFrames = frames.filter((f) => f.phase === "concentric");
     const eccFrames  = frames.filter((f) => f.phase === "eccentric");
@@ -420,11 +413,9 @@ export function computeRepStats(vFrames: VelocityFrame[]): RepStats[] {
     });
   });
 
-  // Sort and renumber
   stats.sort((a, b) => a.repNumber - b.repNumber);
   stats.forEach((s, i) => { s.repNumber = i + 1; });
 
-  // % speed drop vs rep 1
   const rep1Peak = stats[0]?.peakConcentricVelocity ?? 1;
   for (const s of stats) {
     s.percentSpeedDrop =
@@ -432,7 +423,6 @@ export function computeRepStats(vFrames: VelocityFrame[]): RepStats[] {
         ? ((rep1Peak - s.peakConcentricVelocity) / rep1Peak) * 100
         : 0;
   }
-
   return stats;
 }
 
@@ -444,7 +434,8 @@ export function analyseReps(
 ): { vFrames: VelocityFrame[]; repStats: RepStats[] } {
   const withVelocity = buildVelocityFrames(frames, fps);
   const withReps     = detectPhasesAndReps(withVelocity);
-  const filtered     = filterAndRenumber(withReps, frames);
+  const trimmed      = trimRepFalseStarts(withReps);
+  const filtered     = filterAndRenumber(trimmed, frames);
   const repStats     = computeRepStats(filtered);
   return { vFrames: filtered, repStats };
 }
