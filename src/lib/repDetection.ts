@@ -423,7 +423,9 @@ function chooseBestRepCandidates(
    *   segment 3 + segment 4
    *
    * This makes the detector lift-agnostic:
-   * it can handle down→up reps or up→down reps.
+   * it can handle:
+   *   down → up
+   *   up → down
    */
   const offset0 = adaptiveFilterCandidates(
     buildRepCandidatesFromOffset(segments, 0, vFrames),
@@ -441,36 +443,7 @@ function chooseBestRepCandidates(
   return score1 > score0 ? offset1 : offset0;
 }
 
-// ─── Step 5: Infer concentric direction ───────────────────────────────────────
-
-function inferConcentricDirection(candidates: RepCandidate[]): -1 | 1 {
-  const upPeaks: number[] = [];
-  const downPeaks: number[] = [];
-
-  for (const c of candidates) {
-    for (const seg of [c.first, c.second]) {
-      if (seg.dir === -1) {
-        upPeaks.push(seg.peakAbsVy);
-      } else {
-        downPeaks.push(seg.peakAbsVy);
-      }
-    }
-  }
-
-  const medUp = median(upPeaks);
-  const medDown = median(downPeaks);
-
-  /**
-   * General heuristic:
-   * the faster / more forceful direction is usually concentric.
-   *
-   * dir -1 = bar moving up
-   * dir +1 = bar moving down
-   */
-  return medUp >= medDown ? -1 : 1;
-}
-
-// ─── Step 6: Edge trim rack/unrack candidates ─────────────────────────────────
+// ─── Step 5: Edge trim rack/unrack candidates ─────────────────────────────────
 
 function trimEdgeCandidates(candidates: RepCandidate[]): RepCandidate[] {
   if (candidates.length <= 1) return candidates;
@@ -533,7 +506,7 @@ function trimEdgeCandidates(candidates: RepCandidate[]): RepCandidate[] {
   return trimmed;
 }
 
-// ─── Step 7: Detect phases and assign reps ────────────────────────────────────
+// ─── Step 6: Detect phases and assign reps ────────────────────────────────────
 
 export function detectPhasesAndReps(
   vFrames: VelocityFrame[],
@@ -563,8 +536,6 @@ export function detectPhasesAndReps(
 
   if (!candidates.length) return result;
 
-  const concentricDir = inferConcentricDirection(candidates);
-
   candidates.forEach((candidate, repIdx) => {
     for (let i = candidate.start; i <= candidate.end; i++) {
       const f = result[i];
@@ -588,7 +559,15 @@ export function detectPhasesAndReps(
       }
 
       f.repIndex = repIdx;
-      f.phase = dir === concentricDir ? "concentric" : "eccentric";
+
+      /**
+       * Universal phase rule:
+       *
+       * video y increases downward, therefore:
+       *   dir +1 = bar moving DOWN = eccentric
+       *   dir -1 = bar moving UP   = concentric
+       */
+      f.phase = dir === 1 ? "eccentric" : "concentric";
     }
   });
 
@@ -597,7 +576,7 @@ export function detectPhasesAndReps(
   return result;
 }
 
-// ─── Step 8: Clean tiny phase runs ────────────────────────────────────────────
+// ─── Step 7: Clean tiny phase runs ────────────────────────────────────────────
 
 function cleanTinyPhaseRuns(frames: VelocityFrame[]): void {
   let changed = true;
@@ -653,7 +632,7 @@ function cleanTinyPhaseRuns(frames: VelocityFrame[]): void {
   }
 }
 
-// ─── Step 9: Final sanity filter + renumber ──────────────────────────────────
+// ─── Step 8: Final sanity filter + renumber ──────────────────────────────────
 
 export function filterAndRenumber(
   vFrames: VelocityFrame[],
@@ -759,7 +738,7 @@ export function filterAndRenumber(
   return result;
 }
 
-// ─── Step 10: Per-rep statistics ──────────────────────────────────────────────
+// ─── Step 9: Per-rep statistics ───────────────────────────────────────────────
 
 export function computeRepStats(vFrames: VelocityFrame[]): RepStats[] {
   const repMap = new Map<number, VelocityFrame[]>();
