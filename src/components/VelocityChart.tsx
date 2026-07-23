@@ -11,11 +11,12 @@ import {
   ReferenceLine,
   ResponsiveContainer,
 } from "recharts";
-import type { VelocityFrame, RepStats } from "@/types";
+import type { VelocityFrame, RepStats, CalibrationPoints } from "@/types";
 
 interface Props {
-  vFrames:  VelocityFrame[];
-  repStats: RepStats[];
+  vFrames:     VelocityFrame[];
+  repStats:    RepStats[];
+  calibration: CalibrationPoints | null;
 }
 
 const PHASE_COLOUR: Record<string, string> = {
@@ -33,26 +34,36 @@ interface ChartPoint {
   repIndex:   number | null;
 }
 
-export default function VelocityChart({ vFrames, repStats }: Props) {
+export default function VelocityChart({ vFrames, repStats, calibration }: Props) {
 
-  // ── Build chart data — eccentric = negative, concentric = positive ─────────
+  // ── Unit helpers ────────────────────────────────────────────────────────────
+  const isCalib  = calibration !== null;
+  const unit     = isCalib ? "m/s" : "px/s";
+
+  /** Convert px/s to display unit, rounded appropriately */
+  const toDisplay = (pxPerS: number): number => {
+    if (!isCalib) return Math.round(pxPerS);
+    return Math.round((pxPerS / calibration!.pxPerM) * 1000) / 1000;
+  };
+
+  // ── Build chart data ────────────────────────────────────────────────────────
   const data: ChartPoint[] = vFrames.map((f) => {
+    const v = toDisplay(f.velocitySmoothed);
     const signed =
       f.phase === "rest"        ?  0
-      : f.phase === "eccentric" ? -Math.round(f.velocitySmoothed)
-      :                            Math.round(f.velocitySmoothed);
-
+      : f.phase === "eccentric" ? -v
+      :                            v;
     return {
       time:       f.timeSeconds.toFixed(2),
       smoothed:   signed,
-      concentric: f.phase === "concentric" ?  Math.round(f.velocitySmoothed) : null,
-      eccentric:  f.phase === "eccentric"  ? -Math.round(f.velocitySmoothed) : null,
+      concentric: f.phase === "concentric" ?  v : null,
+      eccentric:  f.phase === "eccentric"  ? -v : null,
       phase:      f.phase,
       repIndex:   f.repIndex,
     };
   });
 
-  // ── Rep boundary lines — first frame of each rep ───────────────────────────
+  // ── Rep boundary lines ──────────────────────────────────────────────────────
   const repBoundaries = repStats.map((s) => {
     const firstFrame = vFrames.find(
       (f) => f.repIndex === s.repNumber - 1 && f.phase !== "rest"
@@ -63,10 +74,19 @@ export default function VelocityChart({ vFrames, repStats }: Props) {
     };
   });
 
-  const maxV = Math.max(...vFrames.map((f) => f.velocitySmoothed), 1);
-  const axisMax = Math.ceil(maxV * 1.2);
+  const maxV    = Math.max(...vFrames.map((f) => toDisplay(f.velocitySmoothed)), 1);
+  const axisMax = isCalib
+    ? Math.ceil(maxV * 1.2 * 100) / 100   // round to 2dp for m/s
+    : Math.ceil(maxV * 1.2);
 
-  // ── Custom tooltip ─────────────────────────────────────────────────────────
+  // ── Tick formatter ──────────────────────────────────────────────────────────
+  const tickFmt = (v: number) => {
+    const abs = Math.abs(v);
+    const str = isCalib ? abs.toFixed(2) : String(abs);
+    return v > 0 ? `+${str}` : v < 0 ? `−${str}` : "0";
+  };
+
+  // ── Custom tooltip ──────────────────────────────────────────────────────────
   const CustomTooltip = ({
     active,
     payload,
@@ -78,49 +98,59 @@ export default function VelocityChart({ vFrames, repStats }: Props) {
   }) => {
     if (!active || !payload?.length) return null;
     const point  = data.find((d) => d.time === label);
-    const phase  = point?.phase  ?? "rest";
+    const phase  = point?.phase   ?? "rest";
     const repIdx = point?.repIndex ?? null;
     const val    = Math.abs(payload[0]?.value ?? 0);
+    const sign   = phase === "eccentric" ? "−" : phase === "concentric" ? "+" : "";
 
     return (
-      <div className="bg-[#1a1a1a] border border-white/10 rounded-lg px-3 py-2 text-xs">
+      <div className="bg-[#1a1a1a] border border-white/10 rounded-lg px-3 py-2 text-xs shadow-xl">
         <p className="text-white/40 mb-1">{label}s</p>
         <p
-          className="font-bold capitalize"
+          className="font-bold capitalize mb-0.5"
           style={{ color: PHASE_COLOUR[phase] ?? "#ffffff22" }}
         >
           {phase}
           {repIdx !== null ? ` · Rep ${repIdx + 1}` : ""}
         </p>
         <p className="text-white font-mono">
-          {phase === "eccentric" ? "−" : phase === "concentric" ? "+" : ""}
-          {val} px/s
+          {sign}{isCalib ? val.toFixed(3) : Math.round(val)} {unit}
         </p>
       </div>
     );
   };
 
-  // ── Render ─────────────────────────────────────────────────────────────────
+  // ── Render ──────────────────────────────────────────────────────────────────
   return (
     <div className="bg-white/5 border border-white/10 rounded-xl p-6 flex flex-col gap-6">
 
       {/* Header */}
-      <div>
-        <h3 className="font-bold text-white/80">Velocity Trace</h3>
-        <p className="text-white/30 text-xs mt-0.5">
-          <span style={{ color: PHASE_COLOUR.concentric }}>■</span>{" "}
-          Concentric (positive) &nbsp;
-          <span style={{ color: PHASE_COLOUR.eccentric }}>■</span>{" "}
-          Eccentric (negative) &nbsp;
-          <span className="text-white/20">■</span> Rest
-        </p>
+      <div className="flex items-start justify-between">
+        <div>
+          <h3 className="font-bold text-white/80">Velocity Trace</h3>
+          <p className="text-white/30 text-xs mt-0.5">
+            <span style={{ color: PHASE_COLOUR.concentric }}>■</span>{" "}
+            Concentric (positive) &nbsp;
+            <span style={{ color: PHASE_COLOUR.eccentric }}>■</span>{" "}
+            Eccentric (negative)
+          </p>
+        </div>
+        {isCalib ? (
+          <span className="text-xs text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-1 rounded-lg">
+            ✅ {calibration!.diameterCm}cm · {unit}
+          </span>
+        ) : (
+          <span className="text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 px-2 py-1 rounded-lg">
+            ⚠️ uncalibrated · {unit}
+          </span>
+        )}
       </div>
 
       {/* Main chart */}
       <ResponsiveContainer width="100%" height={300}>
         <ComposedChart
           data={data}
-          margin={{ top: 8, right: 16, bottom: 20, left: 8 }}
+          margin={{ top: 8, right: 16, bottom: 20, left: 12 }}
         >
           <CartesianGrid
             strokeDasharray="3 3"
@@ -144,9 +174,9 @@ export default function VelocityChart({ vFrames, repStats }: Props) {
             stroke="rgba(255,255,255,0.2)"
             tick={{ fontSize: 10, fill: "rgba(255,255,255,0.3)" }}
             domain={[-axisMax, axisMax]}
-            tickFormatter={(v: number) => `${v > 0 ? "+" : ""}${v}`}
+            tickFormatter={tickFmt}
             label={{
-              value:    "px/s",
+              value:    unit,
               angle:    -90,
               position: "insideLeft",
               offset:   10,
@@ -216,7 +246,7 @@ export default function VelocityChart({ vFrames, repStats }: Props) {
         </ComposedChart>
       </ResponsiveContainer>
 
-      {/* Per-rep peak concentric velocity bar chart */}
+      {/* Per-rep peak concentric bar chart */}
       {repStats.length > 0 && (
         <div className="border-t border-white/10 pt-4">
           <p className="text-white/50 text-xs font-semibold mb-3 uppercase tracking-wider">
@@ -230,6 +260,7 @@ export default function VelocityChart({ vFrames, repStats }: Props) {
               const colour   =
                 ratio >= 0.95 ? "#10b981" :
                 ratio >= 0.85 ? "#f59e0b" : "#ef4444";
+              const displayPeak = toDisplay(s.peakConcentricVelocity);
               return (
                 <div
                   key={s.repNumber}
@@ -239,9 +270,9 @@ export default function VelocityChart({ vFrames, repStats }: Props) {
                     className="text-xs font-mono tabular-nums"
                     style={{ color: colour }}
                   >
-                    {Math.round(s.peakConcentricVelocity)}
+                    {isCalib ? displayPeak.toFixed(2) : Math.round(displayPeak)}
                   </span>
-                  <div className="w-full flex items-end" style={{ height: "60px" }}>
+                  <div className="w-full flex items-end" style={{ height: "56px" }}>
                     <div
                       className="w-full rounded-t-sm"
                       style={{
@@ -256,6 +287,9 @@ export default function VelocityChart({ vFrames, repStats }: Props) {
               );
             })}
           </div>
+          <p className="text-white/20 text-xs text-center mt-2">
+            {unit} · smoothed peak concentric
+          </p>
         </div>
       )}
 

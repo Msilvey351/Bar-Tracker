@@ -61,3 +61,15 @@ export interface RepStats {
   /** % drop from rep 1 peak concentric velocity */
   percentSpeedDrop: number;
 }
+
+/** Plate calibration — two clicked points defining plate diameter */
+export interface CalibrationPoints {
+  top:    Point;
+  bottom: Point;
+  /** Diameter in cm as entered by user */
+  diameterCm: number;
+  /** Derived: pixels per centimetre */
+  pxPerCm: number;
+  /** Derived: pixels per metre */
+  pxPerM: number;
+}
