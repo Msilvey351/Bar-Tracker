@@ -189,7 +189,6 @@ export default function VelocityChart({ vFrames, repStats }: Props) {
             dot={false}
             strokeWidth={1}
             legendType="none"
-            baseLine={0}
           />
 
           {/* Concentric — orange, positive */}
