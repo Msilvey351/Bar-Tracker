@@ -1,4 +1,16 @@
-import type { FrameResult, VelocityFrame, Phase, RepStats } from "@/types";
+import type {
+  FrameResult,
+  VelocityFrame,
+  Phase,
+  RepStats,
+  CalibrationPoints,
+} from "@/types";
+
+// ─── Public options ───────────────────────────────────────────────────────────
+
+export interface AnalyseRepOptions {
+  calibration?: CalibrationPoints | null;
+}
 
 // ─── Tuning ───────────────────────────────────────────────────────────────────
 
@@ -26,8 +38,20 @@ const MIN_REP_FRAMES = 14;
 /** Maximum frames in a full rep candidate */
 const MAX_REP_FRAMES = 180;
 
-/** Absolute minimum vertical range in pixels for a rep */
+/** Pixel fallback if no calibration exists */
 const ABS_MIN_VERTICAL_RANGE_PX = 8;
+
+/**
+ * Physical filters used when calibration exists.
+ * This makes close/far camera videos behave consistently.
+ */
+const MIN_REP_RANGE_M = 0.10;
+
+/**
+ * Each half of the rep must have meaningful vertical travel.
+ * Helps reject rack/unrack movements that only contain one real phase.
+ */
+const MIN_PHASE_RANGE_M = 0.035;
 
 /** Rep vertical range must be at least this fraction of median candidate range */
 const MIN_RANGE_VS_MEDIAN = 0.40;
@@ -86,10 +110,24 @@ function signOf(n: number): -1 | 0 | 1 {
   return 0;
 }
 
+function pxToM(px: number, calibration?: CalibrationPoints | null): number | null {
+  if (!calibration) return null;
+  return px / calibration.pxPerM;
+}
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface MovementSegment {
-  dir: -1 | 1; // -1 = bar moving up, +1 = bar moving down
+  /**
+   * Direction convention:
+   * -1 = bar moving UP
+   * +1 = bar moving DOWN
+   *
+   * Browser/video coordinates:
+   * y increases downward.
+   */
+  dir: -1 | 1;
+
   start: number;
   end: number;
   frameCount: number;
@@ -127,8 +165,10 @@ export function buildVelocityFrames(
 
     rawSpeed.push(Math.sqrt(dx * dx + dy * dy) / dt);
 
-    // Positive velocityY = bar moving DOWN in image coordinates
-    // Negative velocityY = bar moving UP
+    /**
+     * velocityY > 0 = bar moving DOWN
+     * velocityY < 0 = bar moving UP
+     */
     rawVY.push(dy / dt);
   }
 
@@ -147,7 +187,7 @@ export function buildVelocityFrames(
   }));
 }
 
-// ─── Step 2: Detect active movement segments ──────────────────────────────────
+// ─── Step 2: Build active movement segments ───────────────────────────────────
 
 function buildMovementSegments(vFrames: VelocityFrame[]): MovementSegment[] {
   if (!vFrames.length) return [];
@@ -199,7 +239,7 @@ function buildMovementSegments(vFrames: VelocityFrame[]): MovementSegment[] {
     i = j;
   }
 
-  // Merge same-direction segments separated by tiny rest gaps
+  // Merge same-direction segments separated by tiny rest gaps.
   const merged: MovementSegment[] = [];
 
   for (const seg of rawSegments) {
@@ -244,11 +284,6 @@ function makeSegment(
 }
 
 // ─── Step 3: Pair opposite-direction segments into rep candidates ─────────────
-//
-// This is the important part.
-// A rep is NOT one concentric or one eccentric.
-// A rep is one UP segment + one DOWN segment, in either order.
-// This makes it general for lifts that start from top or bottom.
 
 function buildRepCandidatesFromOffset(
   segments: MovementSegment[],
@@ -263,6 +298,7 @@ function buildRepCandidatesFromOffset(
     const a = segments[i];
     const b = segments[i + 1];
 
+    // A rep must contain two opposite-direction phases.
     if (a.dir === b.dir) {
       i++;
       continue;
@@ -288,17 +324,48 @@ function buildRepCandidatesFromOffset(
   return candidates;
 }
 
-function basicFilterCandidates(candidates: RepCandidate[]): RepCandidate[] {
-  return candidates.filter(
-    (c) =>
+// ─── Step 4: Candidate filters ────────────────────────────────────────────────
+
+function basicFilterCandidates(
+  candidates: RepCandidate[],
+  calibration?: CalibrationPoints | null
+): RepCandidate[] {
+  return candidates.filter((c) => {
+    const frameOk =
       c.frameCount >= MIN_REP_FRAMES &&
-      c.frameCount <= MAX_REP_FRAMES &&
-      c.rangePx >= ABS_MIN_VERTICAL_RANGE_PX
-  );
+      c.frameCount <= MAX_REP_FRAMES;
+
+    if (!frameOk) return false;
+
+    /**
+     * Calibrated mode:
+     * use physical ROM in metres instead of pixels.
+     */
+    if (calibration) {
+      const candidateRangeM = pxToM(c.rangePx, calibration) ?? 0;
+      const firstRangeM = pxToM(c.first.rangePx, calibration) ?? 0;
+      const secondRangeM = pxToM(c.second.rangePx, calibration) ?? 0;
+
+      return (
+        candidateRangeM >= MIN_REP_RANGE_M &&
+        firstRangeM >= MIN_PHASE_RANGE_M &&
+        secondRangeM >= MIN_PHASE_RANGE_M
+      );
+    }
+
+    /**
+     * Fallback mode:
+     * use pixel range if there is no calibration.
+     */
+    return c.rangePx >= ABS_MIN_VERTICAL_RANGE_PX;
+  });
 }
 
-function adaptiveFilterCandidates(candidates: RepCandidate[]): RepCandidate[] {
-  const basic = basicFilterCandidates(candidates);
+function adaptiveFilterCandidates(
+  candidates: RepCandidate[],
+  calibration?: CalibrationPoints | null
+): RepCandidate[] {
+  const basic = basicFilterCandidates(candidates, calibration);
 
   if (!basic.length) return [];
 
@@ -335,20 +402,37 @@ function scoreCandidates(candidates: RepCandidate[]): number {
     (1 - Math.min(1, rangeDeviation)) * 20 +
     (1 - Math.min(1, peakDeviation)) * 10;
 
-  // Number of valid reps matters most. Consistency breaks ties.
+  // Number of reps matters most. Consistency breaks ties.
   return candidates.length * 100 + consistency;
 }
 
 function chooseBestRepCandidates(
   segments: MovementSegment[],
-  vFrames: VelocityFrame[]
+  vFrames: VelocityFrame[],
+  calibration?: CalibrationPoints | null
 ): RepCandidate[] {
+  /**
+   * Try both possible pairings:
+   *
+   * Offset 0:
+   *   segment 0 + segment 1
+   *   segment 2 + segment 3
+   *
+   * Offset 1:
+   *   segment 1 + segment 2
+   *   segment 3 + segment 4
+   *
+   * This makes the detector lift-agnostic:
+   * it can handle down→up reps or up→down reps.
+   */
   const offset0 = adaptiveFilterCandidates(
-    buildRepCandidatesFromOffset(segments, 0, vFrames)
+    buildRepCandidatesFromOffset(segments, 0, vFrames),
+    calibration
   );
 
   const offset1 = adaptiveFilterCandidates(
-    buildRepCandidatesFromOffset(segments, 1, vFrames)
+    buildRepCandidatesFromOffset(segments, 1, vFrames),
+    calibration
   );
 
   const score0 = scoreCandidates(offset0);
@@ -357,11 +441,7 @@ function chooseBestRepCandidates(
   return score1 > score0 ? offset1 : offset0;
 }
 
-// ─── Step 4: Infer concentric direction ───────────────────────────────────────
-//
-// General heuristic:
-// The faster direction across valid reps is usually concentric.
-// This works well for VBT because concentric is normally the forceful phase.
+// ─── Step 5: Infer concentric direction ───────────────────────────────────────
 
 function inferConcentricDirection(candidates: RepCandidate[]): -1 | 1 {
   const upPeaks: number[] = [];
@@ -369,23 +449,47 @@ function inferConcentricDirection(candidates: RepCandidate[]): -1 | 1 {
 
   for (const c of candidates) {
     for (const seg of [c.first, c.second]) {
-      if (seg.dir === -1) upPeaks.push(seg.peakAbsVy);
-      else downPeaks.push(seg.peakAbsVy);
+      if (seg.dir === -1) {
+        upPeaks.push(seg.peakAbsVy);
+      } else {
+        downPeaks.push(seg.peakAbsVy);
+      }
     }
   }
 
   const medUp = median(upPeaks);
   const medDown = median(downPeaks);
 
-  // -1 = upward bar movement is concentric
-  // +1 = downward bar movement is concentric
+  /**
+   * General heuristic:
+   * the faster / more forceful direction is usually concentric.
+   *
+   * dir -1 = bar moving up
+   * dir +1 = bar moving down
+   */
   return medUp >= medDown ? -1 : 1;
 }
 
-// ─── Step 5: Edge trim rack/unrack candidates ─────────────────────────────────
+// ─── Step 6: Edge trim rack/unrack candidates ─────────────────────────────────
 
 function trimEdgeCandidates(candidates: RepCandidate[]): RepCandidate[] {
-  if (candidates.length <= 2) return candidates;
+  if (candidates.length <= 1) return candidates;
+
+  /**
+   * Special case for two candidates:
+   * common in one-rep videos where rack/unrack creates one extra candidate.
+   */
+  if (candidates.length === 2) {
+    const [a, b] = candidates;
+    const maxPeak = Math.max(a.peakSpeed, b.peakSpeed);
+    const maxRange = Math.max(a.rangePx, b.rangePx);
+
+    return candidates.filter(
+      (c) =>
+        c.peakSpeed >= maxPeak * EDGE_TRIM_FRACTION &&
+        c.rangePx >= maxRange * EDGE_TRIM_FRACTION
+    );
+  }
 
   let trimmed = [...candidates];
 
@@ -397,11 +501,9 @@ function trimEdgeCandidates(candidates: RepCandidate[]): RepCandidate[] {
     const innerMedianPeak = median(inner.map((c) => c.peakSpeed));
     const innerMedianRange = median(inner.map((c) => c.rangePx));
 
-    const first = trimmed[0];
-    const last = trimmed[trimmed.length - 1];
-
     let changed = false;
 
+    const first = trimmed[0];
     if (
       first.peakSpeed < innerMedianPeak * EDGE_TRIM_FRACTION ||
       first.rangePx < innerMedianRange * EDGE_TRIM_FRACTION
@@ -414,11 +516,11 @@ function trimEdgeCandidates(candidates: RepCandidate[]): RepCandidate[] {
       const newInner = trimmed.slice(1, -1);
       const newInnerMedianPeak = median(newInner.map((c) => c.peakSpeed));
       const newInnerMedianRange = median(newInner.map((c) => c.rangePx));
-      const newLast = trimmed[trimmed.length - 1];
+      const last = trimmed[trimmed.length - 1];
 
       if (
-        newLast.peakSpeed < newInnerMedianPeak * EDGE_TRIM_FRACTION ||
-        newLast.rangePx < newInnerMedianRange * EDGE_TRIM_FRACTION
+        last.peakSpeed < newInnerMedianPeak * EDGE_TRIM_FRACTION ||
+        last.rangePx < newInnerMedianRange * EDGE_TRIM_FRACTION
       ) {
         trimmed = trimmed.slice(0, -1);
         changed = true;
@@ -431,9 +533,12 @@ function trimEdgeCandidates(candidates: RepCandidate[]): RepCandidate[] {
   return trimmed;
 }
 
-// ─── Step 6: Detect phases and assign reps ────────────────────────────────────
+// ─── Step 7: Detect phases and assign reps ────────────────────────────────────
 
-export function detectPhasesAndReps(vFrames: VelocityFrame[]): VelocityFrame[] {
+export function detectPhasesAndReps(
+  vFrames: VelocityFrame[],
+  options: AnalyseRepOptions = {}
+): VelocityFrame[] {
   const result = vFrames.map((f) => ({
     ...f,
     phase: "rest" as Phase,
@@ -446,7 +551,11 @@ export function detectPhasesAndReps(vFrames: VelocityFrame[]): VelocityFrame[] {
 
   if (segments.length < 2) return result;
 
-  let candidates = chooseBestRepCandidates(segments, result);
+  let candidates = chooseBestRepCandidates(
+    segments,
+    result,
+    options.calibration
+  );
 
   if (!candidates.length) return result;
 
@@ -454,7 +563,7 @@ export function detectPhasesAndReps(vFrames: VelocityFrame[]): VelocityFrame[] {
 
   if (!candidates.length) return result;
 
-  const concentricDir: -1 | 1 = -1;
+  const concentricDir = inferConcentricDirection(candidates);
 
   candidates.forEach((candidate, repIdx) => {
     for (let i = candidate.start; i <= candidate.end; i++) {
@@ -468,7 +577,7 @@ export function detectPhasesAndReps(vFrames: VelocityFrame[]): VelocityFrame[] {
         continue;
       }
 
-      // Only label active frames inside the rep window
+      // Only label active frames inside the rep window.
       const isMovingEnough =
         f.velocitySmoothed >= candidate.peakSpeed * 0.10;
 
@@ -488,7 +597,7 @@ export function detectPhasesAndReps(vFrames: VelocityFrame[]): VelocityFrame[] {
   return result;
 }
 
-// ─── Step 7: Clean tiny phase runs ────────────────────────────────────────────
+// ─── Step 8: Clean tiny phase runs ────────────────────────────────────────────
 
 function cleanTinyPhaseRuns(frames: VelocityFrame[]): void {
   let changed = true;
@@ -544,9 +653,12 @@ function cleanTinyPhaseRuns(frames: VelocityFrame[]): void {
   }
 }
 
-// ─── Step 8: Final sanity filter + renumber ──────────────────────────────────
+// ─── Step 9: Final sanity filter + renumber ──────────────────────────────────
 
-export function filterAndRenumber(vFrames: VelocityFrame[]): VelocityFrame[] {
+export function filterAndRenumber(
+  vFrames: VelocityFrame[],
+  options: AnalyseRepOptions = {}
+): VelocityFrame[] {
   const result = vFrames.map((f) => ({ ...f }));
 
   const repIndices = [
@@ -567,6 +679,7 @@ export function filterAndRenumber(vFrames: VelocityFrame[]): VelocityFrame[] {
     peakConc: number;
     peakSpeed: number;
     rangePx: number;
+    rangeM: number | null;
     totalFrames: number;
   }
 
@@ -575,6 +688,8 @@ export function filterAndRenumber(vFrames: VelocityFrame[]): VelocityFrame[] {
     const concFrames = frames.filter((f) => f.phase === "concentric");
     const eccFrames = frames.filter((f) => f.phase === "eccentric");
 
+    const rangePx = range(frames.map((f) => f.position.y));
+
     return {
       idx,
       frames,
@@ -582,18 +697,26 @@ export function filterAndRenumber(vFrames: VelocityFrame[]): VelocityFrame[] {
       eccFrames,
       peakConc: maxValue(concFrames.map((f) => f.velocitySmoothed)),
       peakSpeed: maxValue(frames.map((f) => f.velocitySmoothed)),
-      rangePx: range(frames.map((f) => f.position.y)),
+      rangePx,
+      rangeM: pxToM(rangePx, options.calibration),
       totalFrames: frames.length,
     };
   });
 
-  metrics = metrics.filter(
-    (m) =>
+  metrics = metrics.filter((m) => {
+    const basicOk =
       m.totalFrames >= MIN_REP_FRAMES &&
       m.concFrames.length > 0 &&
-      m.eccFrames.length > 0 &&
-      m.rangePx >= ABS_MIN_VERTICAL_RANGE_PX
-  );
+      m.eccFrames.length > 0;
+
+    if (!basicOk) return false;
+
+    if (options.calibration && m.rangeM !== null) {
+      return m.rangeM >= MIN_REP_RANGE_M;
+    }
+
+    return m.rangePx >= ABS_MIN_VERTICAL_RANGE_PX;
+  });
 
   if (!metrics.length) {
     return result.map((f) => ({
@@ -636,7 +759,7 @@ export function filterAndRenumber(vFrames: VelocityFrame[]): VelocityFrame[] {
   return result;
 }
 
-// ─── Step 9: Per-rep statistics ───────────────────────────────────────────────
+// ─── Step 10: Per-rep statistics ──────────────────────────────────────────────
 
 export function computeRepStats(vFrames: VelocityFrame[]): RepStats[] {
   const repMap = new Map<number, VelocityFrame[]>();
@@ -711,11 +834,12 @@ export function computeRepStats(vFrames: VelocityFrame[]): RepStats[] {
 
 export function analyseReps(
   frames: FrameResult[],
-  fps: number
+  fps: number,
+  options: AnalyseRepOptions = {}
 ): { vFrames: VelocityFrame[]; repStats: RepStats[] } {
   const withVelocity = buildVelocityFrames(frames, fps);
-  const withReps = detectPhasesAndReps(withVelocity);
-  const filtered = filterAndRenumber(withReps);
+  const withReps = detectPhasesAndReps(withVelocity, options);
+  const filtered = filterAndRenumber(withReps, options);
   const repStats = computeRepStats(filtered);
 
   return {

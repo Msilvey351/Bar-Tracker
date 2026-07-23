@@ -2,16 +2,16 @@
 
 import { useMemo, useState } from "react";
 import type { AnalysisResult, CalibrationPoints } from "@/types";
-import { analyseReps }   from "@/lib/repDetection";
-import VideoPlayback     from "./VideoPlayback";
-import VelocityChart     from "./VelocityChart";
-import RepTable          from "./RepTable";
+import { analyseReps } from "@/lib/repDetection";
+import VideoPlayback from "./VideoPlayback";
+import VelocityChart from "./VelocityChart";
+import RepTable from "./RepTable";
 
 interface Props {
-  result:      AnalysisResult;
-  file:        File;
+  result: AnalysisResult;
+  file: File;
   calibration: CalibrationPoints | null;
-  onReset:     () => void;
+  onReset: () => void;
 }
 
 type ResultView = "table" | "chart" | "playback";
@@ -24,22 +24,29 @@ export default function ResultsStep({
 }: Props) {
   const [view, setView] = useState<ResultView>("table");
 
-  // analyseReps receives result.frames (FrameResult[]) so filterAndRenumber
-  // can compute real vertical pixel displacement per rep
+  /**
+   * Lift-agnostic rep detection:
+   * - no hardcoded lift type
+   * - uses calibration when available
+   * - automatically chooses the best up/down or down/up pairing
+   * - automatically infers concentric/eccentric from the stronger direction
+   */
   const { vFrames, repStats } = useMemo(
-    () => analyseReps(result.frames, result.fps),
-    [result]
+    () =>
+      analyseReps(result.frames, result.fps, {
+        calibration,
+      }),
+    [result, calibration]
   );
 
   const views: { id: ResultView; label: string; icon: string }[] = [
-    { id: "table",    label: "Rep Stats",      icon: "📊" },
-    { id: "chart",    label: "Velocity Chart", icon: "📈" },
+    { id: "table", label: "Rep Stats", icon: "📊" },
+    { id: "chart", label: "Velocity Chart", icon: "📈" },
     { id: "playback", label: "Video Playback", icon: "🎬" },
   ];
 
   return (
     <div className="flex flex-col items-center gap-6">
-
       {/* Header */}
       <div className="text-center">
         <h2 className="text-2xl font-bold">Analysis Complete 🎉</h2>
@@ -66,9 +73,10 @@ export default function ResultsStep({
             className={`
               px-4 py-2 rounded-lg font-semibold text-sm transition-all
               flex items-center gap-2
-              ${view === v.id
-                ? "bg-orange-500 text-white shadow-md shadow-orange-500/20"
-                : "text-white/50 hover:text-white"
+              ${
+                view === v.id
+                  ? "bg-orange-500 text-white shadow-md shadow-orange-500/20"
+                  : "text-white/50 hover:text-white"
               }
             `}
           >
@@ -81,11 +89,9 @@ export default function ResultsStep({
       {/* Content */}
       <div className="w-full max-w-4xl">
         {view === "table" && (
-          <RepTable
-            stats={repStats}
-            calibration={calibration}
-          />
+          <RepTable stats={repStats} calibration={calibration} />
         )}
+
         {view === "chart" && (
           <VelocityChart
             vFrames={vFrames}
@@ -93,11 +99,9 @@ export default function ResultsStep({
             calibration={calibration}
           />
         )}
+
         {view === "playback" && (
-          <VideoPlayback
-            file={file}
-            result={result}
-          />
+          <VideoPlayback file={file} result={result} />
         )}
       </div>
 
@@ -108,7 +112,6 @@ export default function ResultsStep({
       >
         ↩ Analyse Another Video
       </button>
-
     </div>
   );
 }
