@@ -19,51 +19,90 @@ interface Props {
   calibration: CalibrationPoints | null;
 }
 
-const PHASE_COLOUR: Record<string, string> = {
-  concentric: "#f97316",
-  eccentric:  "#3b82f6",
-  rest:       "#ffffff22",
-};
+/**
+ * Phase colours:
+ *   concentric = orange (positive, bar moving up)
+ *   eccentric  = blue   (negative, bar moving down)
+ *   rest/unassigned = grey (shown but not counted as a rep)
+ */
+const PHASE_COLOUR = {
+  concentric:  "#f97316",
+  eccentric:   "#3b82f6",
+  unassigned:  "#6b7280",
+  rest:        "#6b7280",
+} as const;
 
 interface ChartPoint {
-  time:       string;
-  smoothed:   number;
-  concentric: number | null;
-  eccentric:  number | null;
-  phase:      string;
-  repIndex:   number | null;
+  time:        string;
+  background:  number | null;
+  concentric:  number | null;
+  eccentric:   number | null;
+  unassigned:  number | null;
+  phase:       string;
+  repIndex:    number | null;
 }
 
-export default function VelocityChart({ vFrames, repStats, calibration }: Props) {
+export default function VelocityChart({
+  vFrames,
+  repStats,
+  calibration,
+}: Props) {
 
   // ── Unit helpers ────────────────────────────────────────────────────────────
-  const isCalib  = calibration !== null;
-  const unit     = isCalib ? "m/s" : "px/s";
+  const isCalib = calibration !== null;
+  const unit    = isCalib ? "m/s" : "px/s";
 
-  /** Convert px/s to display unit, rounded appropriately */
   const toDisplay = (pxPerS: number): number => {
     if (!isCalib) return Math.round(pxPerS);
     return Math.round((pxPerS / calibration!.pxPerM) * 1000) / 1000;
   };
 
   // ── Build chart data ────────────────────────────────────────────────────────
+  /**
+   * All frames are plotted.
+   *
+   * Frames assigned to a rep:
+   *   concentric = positive (orange)
+   *   eccentric  = negative (blue)
+   *
+   * Frames NOT assigned to a rep (rest, unracking, reracking):
+   *   shown as signed velocity but coloured grey
+   *   this lets the user see what was detected but not counted
+   */
   const data: ChartPoint[] = vFrames.map((f) => {
-    const v = toDisplay(f.velocitySmoothed);
-    const signed =
-      f.phase === "rest"        ?  0
-      : f.phase === "eccentric" ? -v
-      :                            v;
+    const speed  = toDisplay(f.velocitySmoothed);
+    const isDown = f.velocityY > 0;
+
+    /**
+     * Sign:
+     *   bar moving down = negative (eccentric)
+     *   bar moving up   = positive (concentric)
+     */
+    const signed = f.velocitySmoothed < 1e-6
+      ? 0
+      : isDown ? -speed : speed;
+
+    const hasRep = f.repIndex !== null;
+
     return {
       time:       f.timeSeconds.toFixed(2),
-      smoothed:   signed,
-      concentric: f.phase === "concentric" ?  v : null,
-      eccentric:  f.phase === "eccentric"  ? -v : null,
-      phase:      f.phase,
-      repIndex:   f.repIndex,
+      background: null,
+
+      concentric: hasRep && f.phase === "concentric" ? signed  : null,
+      eccentric:  hasRep && f.phase === "eccentric"  ? signed  : null,
+
+      /**
+       * Unassigned = any frame where the bar is moving but not counted as a rep.
+       * This includes unracking, reracking, pauses, wobble.
+       */
+      unassigned: !hasRep && Math.abs(signed) > 0 ? signed : null,
+
+      phase:    f.phase,
+      repIndex: f.repIndex,
     };
   });
 
-  // ── Rep boundary lines ──────────────────────────────────────────────────────
+  // ── Rep boundary reference lines ────────────────────────────────────────────
   const repBoundaries = repStats.map((s) => {
     const firstFrame = vFrames.find(
       (f) => f.repIndex === s.repNumber - 1 && f.phase !== "rest"
@@ -76,7 +115,7 @@ export default function VelocityChart({ vFrames, repStats, calibration }: Props)
 
   const maxV    = Math.max(...vFrames.map((f) => toDisplay(f.velocitySmoothed)), 1);
   const axisMax = isCalib
-    ? Math.ceil(maxV * 1.2 * 100) / 100   // round to 2dp for m/s
+    ? Math.ceil(maxV * 1.2 * 100) / 100
     : Math.ceil(maxV * 1.2);
 
   // ── Tick formatter ──────────────────────────────────────────────────────────
@@ -97,21 +136,39 @@ export default function VelocityChart({ vFrames, repStats, calibration }: Props)
     label?:   string;
   }) => {
     if (!active || !payload?.length) return null;
+
     const point  = data.find((d) => d.time === label);
-    const phase  = point?.phase   ?? "rest";
+    const phase  = point?.phase    ?? "rest";
     const repIdx = point?.repIndex ?? null;
-    const val    = Math.abs(payload[0]?.value ?? 0);
-    const sign   = phase === "eccentric" ? "−" : phase === "concentric" ? "+" : "";
+
+    const rawVal = payload.find(
+      (p) => p.value !== null && p.value !== undefined
+    )?.value ?? 0;
+
+    const val  = Math.abs(rawVal);
+    const sign =
+      phase === "eccentric"  ? "−" :
+      phase === "concentric" ? "+" : "";
+
+    const colour =
+      repIdx !== null
+        ? phase === "concentric"
+          ? PHASE_COLOUR.concentric
+          : PHASE_COLOUR.eccentric
+        : PHASE_COLOUR.unassigned;
+
+    const label2 =
+      repIdx !== null
+        ? `${phase} · Rep ${repIdx + 1}`
+        : phase === "rest"
+        ? "rest"
+        : "not counted";
 
     return (
       <div className="bg-[#1a1a1a] border border-white/10 rounded-lg px-3 py-2 text-xs shadow-xl">
         <p className="text-white/40 mb-1">{label}s</p>
-        <p
-          className="font-bold capitalize mb-0.5"
-          style={{ color: PHASE_COLOUR[phase] ?? "#ffffff22" }}
-        >
-          {phase}
-          {repIdx !== null ? ` · Rep ${repIdx + 1}` : ""}
+        <p className="font-bold capitalize mb-0.5" style={{ color: colour }}>
+          {label2}
         </p>
         <p className="text-white font-mono">
           {sign}{isCalib ? val.toFixed(3) : Math.round(val)} {unit}
@@ -128,19 +185,28 @@ export default function VelocityChart({ vFrames, repStats, calibration }: Props)
       <div className="flex items-start justify-between">
         <div>
           <h3 className="font-bold text-white/80">Velocity Trace</h3>
-          <p className="text-white/30 text-xs mt-0.5">
-            <span style={{ color: PHASE_COLOUR.concentric }}>■</span>{" "}
-            Concentric (positive) &nbsp;
-            <span style={{ color: PHASE_COLOUR.eccentric }}>■</span>{" "}
-            Eccentric (negative)
+          <p className="text-white/30 text-xs mt-1 flex items-center gap-3 flex-wrap">
+            <span>
+              <span style={{ color: PHASE_COLOUR.concentric }}>■</span>{" "}
+              Concentric (positive)
+            </span>
+            <span>
+              <span style={{ color: PHASE_COLOUR.eccentric }}>■</span>{" "}
+              Eccentric (negative)
+            </span>
+            <span>
+              <span style={{ color: PHASE_COLOUR.unassigned }}>■</span>{" "}
+              Not counted
+            </span>
           </p>
         </div>
+
         {isCalib ? (
-          <span className="text-xs text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-1 rounded-lg">
+          <span className="text-xs text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-1 rounded-lg shrink-0">
             ✅ {calibration!.diameterCm}cm · {unit}
           </span>
         ) : (
-          <span className="text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 px-2 py-1 rounded-lg">
+          <span className="text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 px-2 py-1 rounded-lg shrink-0">
             ⚠️ uncalibrated · {unit}
           </span>
         )}
@@ -194,7 +260,7 @@ export default function VelocityChart({ vFrames, repStats, calibration }: Props)
             strokeWidth={1.5}
           />
 
-          {/* Rep boundary lines */}
+          {/* Rep boundary reference lines */}
           {repBoundaries.map((b) => (
             <ReferenceLine
               key={b.repNumber}
@@ -210,33 +276,34 @@ export default function VelocityChart({ vFrames, repStats, calibration }: Props)
             />
           ))}
 
-          {/* Faint background trace */}
-          <Area
+          {/* Grey — not counted (unracking, reracking, rest movement) */}
+          <Line
             type="monotone"
-            dataKey="smoothed"
-            stroke="rgba(255,255,255,0.06)"
-            fill="rgba(255,255,255,0.02)"
+            dataKey="unassigned"
+            stroke={PHASE_COLOUR.unassigned}
+            strokeOpacity={0.5}
             dot={false}
-            strokeWidth={1}
-            legendType="none"
+            strokeWidth={2}
+            connectNulls={false}
+            name="Not counted"
           />
 
-          {/* Concentric — orange, positive */}
+          {/* Orange — concentric (positive, bar moving up) */}
           <Line
             type="monotone"
             dataKey="concentric"
-            stroke="#f97316"
+            stroke={PHASE_COLOUR.concentric}
             dot={false}
             strokeWidth={3}
             connectNulls={false}
             name="Concentric"
           />
 
-          {/* Eccentric — blue, negative */}
+          {/* Blue — eccentric (negative, bar moving down) */}
           <Line
             type="monotone"
             dataKey="eccentric"
-            stroke="#3b82f6"
+            stroke={PHASE_COLOUR.eccentric}
             dot={false}
             strokeWidth={3}
             connectNulls={false}
@@ -252,15 +319,20 @@ export default function VelocityChart({ vFrames, repStats, calibration }: Props)
           <p className="text-white/50 text-xs font-semibold mb-3 uppercase tracking-wider">
             Peak Concentric Velocity per Rep
           </p>
+
           <div className="flex items-end gap-2 h-20">
             {repStats.map((s) => {
               const rep1Peak = repStats[0].peakConcentricVelocity;
-              const ratio    = rep1Peak > 0 ? s.peakConcentricVelocity / rep1Peak : 1;
+              const ratio    = rep1Peak > 0
+                ? s.peakConcentricVelocity / rep1Peak
+                : 1;
               const barH     = Math.max(ratio * 100, 4);
               const colour   =
                 ratio >= 0.95 ? "#10b981" :
                 ratio >= 0.85 ? "#f59e0b" : "#ef4444";
+
               const displayPeak = toDisplay(s.peakConcentricVelocity);
+
               return (
                 <div
                   key={s.repNumber}
@@ -270,9 +342,15 @@ export default function VelocityChart({ vFrames, repStats, calibration }: Props)
                     className="text-xs font-mono tabular-nums"
                     style={{ color: colour }}
                   >
-                    {isCalib ? displayPeak.toFixed(2) : Math.round(displayPeak)}
+                    {isCalib
+                      ? displayPeak.toFixed(2)
+                      : Math.round(displayPeak)}
                   </span>
-                  <div className="w-full flex items-end" style={{ height: "56px" }}>
+
+                  <div
+                    className="w-full flex items-end"
+                    style={{ height: "56px" }}
+                  >
                     <div
                       className="w-full rounded-t-sm"
                       style={{
@@ -282,11 +360,15 @@ export default function VelocityChart({ vFrames, repStats, calibration }: Props)
                       }}
                     />
                   </div>
-                  <span className="text-white/30 text-xs">R{s.repNumber}</span>
+
+                  <span className="text-white/30 text-xs">
+                    R{s.repNumber}
+                  </span>
                 </div>
               );
             })}
           </div>
+
           <p className="text-white/20 text-xs text-center mt-2">
             {unit} · smoothed peak concentric
           </p>
