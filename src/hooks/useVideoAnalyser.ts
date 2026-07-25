@@ -96,6 +96,17 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
 
     workerRef.current = worker;
 
+      // Forward worker console messages to main DevTools console
+    worker.addEventListener("message", (e) => {
+      if (e.data?.type === "log") {
+        if (e.data.level === "warn") {
+          console.warn("[worker]", ...e.data.args);
+        } else {
+          console.log("[worker]", ...e.data.args);
+        }
+      }
+    });
+
     return () => {
       worker.terminate();
       workerRef.current = null;

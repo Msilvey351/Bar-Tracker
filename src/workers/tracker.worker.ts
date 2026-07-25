@@ -1,17 +1,17 @@
 /**
- * Tracker Web Worker — Priority 4 update
+ * Tracker Web Worker — Priority 5 update
  *
- * Uses SharedArrayBuffer for zero-copy frame sharing.
- * Main thread writes pixels into the shared buffer.
- * Worker reads directly — no ArrayBuffer transfer or copy.
+ * Uses WASM optical flow compiled from Rust.
+ * Falls back to TypeScript implementation if WASM fails to load.
+ * Uses SharedArrayBuffer for zero-copy frame sharing (Priority 4).
  */
 
 // ─── Message types ────────────────────────────────────────────────────────────
 
 interface InitMessage {
   type:         "init";
-  sharedBuffer: SharedArrayBuffer;  // pixel data shared with main thread
-  signalBuffer: SharedArrayBuffer;  // Atomics signalling channel
+  sharedBuffer: SharedArrayBuffer;
+  signalBuffer: SharedArrayBuffer;
   width:        number;
   height:       number;
 }
@@ -23,7 +23,8 @@ interface SeedMessage {
 }
 
 interface TrackMessage {
-  type: "track";
+  type:       "track";
+  imageData?: ImageData;
 }
 
 interface ResetMessage {
@@ -48,35 +49,93 @@ interface AckMessage {
   type: "ack";
 }
 
+interface LogMessage {
+  type:  "log";
+  level: "log" | "warn";
+  args:  string[];
+}
+
+// ─── Console forwarding ───────────────────────────────────────────────────────
+// Forwards worker console messages to the main thread so they appear
+// in DevTools even though workers have a separate console context.
+
+const origLog  = console.log.bind(console);
+const origWarn = console.warn.bind(console);
+
+console.log = (...args: unknown[]) => {
+  origLog(...args);
+  const msg: LogMessage = {
+    type:  "log",
+    level: "log",
+    args:  args.map(String),
+  };
+  self.postMessage(msg);
+};
+
+console.warn = (...args: unknown[]) => {
+  origWarn(...args);
+  const msg: LogMessage = {
+    type:  "log",
+    level: "warn",
+    args:  args.map(String),
+  };
+  self.postMessage(msg);
+};
+
 // ─── Tuning ───────────────────────────────────────────────────────────────────
 
 const PATCH_RADIUS   = 15;
 const MAX_ITERATIONS = 20;
 const EPSILON        = 0.01;
 const MIN_CONFIDENCE = 0.28;
+const PATCH_SIZE     = (PATCH_RADIUS * 2 + 1) ** 2;
 
-/**
- * Signal values used with Atomics.
- * Main thread writes FRAME_READY when pixels are written.
- * Worker resets to IDLE after reading.
- */
-const SIGNAL_IDLE        = 0;
-const SIGNAL_FRAME_READY = 1;
+// ─── WASM module ──────────────────────────────────────────────────────────────
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let wasmModule: any  = null;
+let patchData: Float32Array | null = null;
+let outData:   Float32Array | null = null;
+
+async function loadWasm(): Promise<boolean> {
+  try {
+    /**
+     * Dynamic import inside a Web Worker requires an absolute URL.
+     * Relative paths like "/wasm/..." don't resolve correctly inside workers.
+     * self.location.origin gives us the correct base for any environment.
+     */
+    const wasmJsUrl  = `${self.location.origin}/wasm/tracker/tracker.js`;
+    const wasmBinUrl = `${self.location.origin}/wasm/tracker/tracker_bg.wasm`;
+
+    console.log(`Loading WASM from: ${wasmJsUrl}`);
+
+    const mod = await import(/* webpackIgnore: true */ wasmJsUrl);
+
+    // Pass absolute URL to the wasm binary initialiser
+    await mod.default(wasmBinUrl);
+
+    wasmModule = mod;
+    patchData  = new Float32Array(PATCH_SIZE * 3);
+    outData    = new Float32Array(3);
+
+    console.log("✅ WASM tracker loaded");
+    return true;
+  } catch (e) {
+    console.warn("⚠️ WASM tracker failed to load, using TypeScript fallback:", String(e));
+    return false;
+  }
+}
 
 // ─── State ────────────────────────────────────────────────────────────────────
 
-let sharedPixels:   Uint8ClampedArray | null = null;
-let signalArray:    Int32Array        | null = null;
-let frameWidth:     number = 0;
-let frameHeight:    number = 0;
-let prevPatch:      Float32Array | null = null;
-let prevIx:         Float32Array | null = null;
-let prevIy:         Float32Array | null = null;
-let currentPoint:   { x: number; y: number } | null = null;
+let sharedPixels: Uint8ClampedArray | null = null;
+let frameWidth:   number = 0;
+let frameHeight:  number = 0;
+let currentPoint: { x: number; y: number } | null = null;
 
-// ─── Optical flow helpers ─────────────────────────────────────────────────────
+// ─── TypeScript fallback optical flow ─────────────────────────────────────────
 
-function sampleLuma(
+function sampleLumaTS(
   data:   Uint8ClampedArray,
   width:  number,
   height: number,
@@ -86,11 +145,11 @@ function sampleLuma(
   if (x < 1 || y < 1 || x >= width - 2 || y >= height - 2) return 0;
 
   const x0 = Math.floor(x);
-  const y0 = Math.floor(y);
-  const x1 = Math.min(x0 + 1, width  - 1);
-  const y1 = Math.min(y0 + 1, height - 1);
-  const fx = x - x0;
-  const fy = y - y0;
+  const y0  = Math.floor(y);
+  const x1  = Math.min(x0 + 1, width  - 1);
+  const y1  = Math.min(y0 + 1, height - 1);
+  const fx  = x - x0;
+  const fy  = y - y0;
 
   const luma = (px: number, py: number) => {
     const i = (py * width + px) * 4;
@@ -105,104 +164,69 @@ function sampleLuma(
   );
 }
 
-function buildPrevPatchAndGradients(
+let tsPatchData: Float32Array | null = null;
+let tsIxData:    Float32Array | null = null;
+let tsIyData:    Float32Array | null = null;
+
+function buildPatchTS(
   data:   Uint8ClampedArray,
   width:  number,
   height: number,
   cx:     number,
-  cy:     number,
-  radius: number
+  cy:     number
 ): void {
-  const size = radius * 2 + 1;
+  const r = PATCH_RADIUS;
 
-  prevPatch = new Float32Array(size * size);
-  prevIx    = new Float32Array(size * size);
-  prevIy    = new Float32Array(size * size);
+  tsPatchData = new Float32Array(PATCH_SIZE);
+  tsIxData    = new Float32Array(PATCH_SIZE);
+  tsIyData    = new Float32Array(PATCH_SIZE);
 
   let i = 0;
-  for (let dy = -radius; dy <= radius; dy++) {
-    for (let dx = -radius; dx <= radius; dx++) {
+  for (let dy = -r; dy <= r; dy++) {
+    for (let dx = -r; dx <= r; dx++) {
       const px = cx + dx;
       const py = cy + dy;
 
-      prevPatch[i] = sampleLuma(data, width, height, px,     py);
-      prevIx[i]    = (sampleLuma(data, width, height, px + 1, py) -
-                      sampleLuma(data, width, height, px - 1, py)) / 2;
-      prevIy[i]    = (sampleLuma(data, width, height, px,     py + 1) -
-                      sampleLuma(data, width, height, px,     py - 1)) / 2;
+      tsPatchData[i] = sampleLumaTS(data, width, height, px,     py);
+      tsIxData[i]    = (sampleLumaTS(data, width, height, px + 1, py) -
+                        sampleLumaTS(data, width, height, px - 1, py)) / 2;
+      tsIyData[i]    = (sampleLumaTS(data, width, height, px,     py + 1) -
+                        sampleLumaTS(data, width, height, px,     py - 1)) / 2;
       i++;
     }
   }
 }
 
-function computeNCC(
-  a: Float32Array,
-  b: Float32Array
-): number {
-  if (a.length !== b.length || a.length === 0) return 0;
-
-  let meanA = 0;
-  let meanB = 0;
-
-  for (let i = 0; i < a.length; i++) {
-    meanA += a[i];
-    meanB += b[i];
-  }
-
-  meanA /= a.length;
-  meanB /= b.length;
-
-  let numerator = 0;
-  let denomA    = 0;
-  let denomB    = 0;
-
-  for (let i = 0; i < a.length; i++) {
-    const da = a[i] - meanA;
-    const db = b[i] - meanB;
-    numerator += da * db;
-    denomA    += da * da;
-    denomB    += db * db;
-  }
-
-  const denom = Math.sqrt(denomA * denomB);
-  if (denom < 1e-6) return 0;
-
-  return Math.max(0, Math.min(1, (numerator / denom + 1) / 2));
-}
-
-function runLucasKanade(
-  nextData: Uint8ClampedArray,
-  width:    number,
-  height:   number,
-  startX:   number,
-  startY:   number
+function trackPointTS(
+  data:   Uint8ClampedArray,
+  width:  number,
+  height: number,
+  startX: number,
+  startY: number
 ): { x: number; y: number; confidence: number } {
-  if (!prevPatch || !prevIx || !prevIy) {
+  if (!tsPatchData || !tsIxData || !tsIyData) {
     return { x: startX, y: startY, confidence: 0 };
   }
 
   let gx = startX;
   let gy = startY;
-
-  const r    = PATCH_RADIUS;
-  const size = 2 * r + 1;
+  const r = PATCH_RADIUS;
 
   for (let iter = 0; iter < MAX_ITERATIONS; iter++) {
-    let b1 = 0, b2 = 0;
-    let A11 = 0, A12 = 0, A22 = 0;
+    let b1 = 0, b2 = 0, A11 = 0, A12 = 0, A22 = 0;
+    let i  = 0;
 
-    let i = 0;
     for (let dy = -r; dy <= r; dy++) {
       for (let dx = -r; dx <= r; dx++) {
-        const nextVal = sampleLuma(nextData, width, height, gx + dx, gy + dy);
-        const It      = nextVal - prevPatch[i];
+        const It =
+          sampleLumaTS(data, width, height, gx + dx, gy + dy) -
+          tsPatchData[i];
 
-        b1  += -It * prevIx[i];
-        b2  += -It * prevIy[i];
-        A11 += prevIx[i] * prevIx[i];
-        A12 += prevIx[i] * prevIy[i];
-        A22 += prevIy[i] * prevIy[i];
-
+        b1  += -It * tsIxData[i];
+        b2  += -It * tsIyData[i];
+        A11 += tsIxData[i] * tsIxData[i];
+        A12 += tsIxData[i] * tsIyData[i];
+        A22 += tsIyData[i] * tsIyData[i];
         i++;
       }
     }
@@ -222,18 +246,96 @@ function runLucasKanade(
   gx = Math.max(0, Math.min(width  - 1, gx));
   gy = Math.max(0, Math.min(height - 1, gy));
 
-  // Compute new patch for NCC confidence
-  const newPatch = new Float32Array(size * size);
+  // NCC confidence
+  const newPatch = new Float32Array(PATCH_SIZE);
   let i = 0;
   for (let dy = -r; dy <= r; dy++) {
     for (let dx = -r; dx <= r; dx++) {
-      newPatch[i++] = sampleLuma(nextData, width, height, gx + dx, gy + dy);
+      newPatch[i++] = sampleLumaTS(data, width, height, gx + dx, gy + dy);
     }
   }
 
-  const confidence = computeNCC(prevPatch, newPatch);
+  let meanA = 0;
+  let meanB = 0;
+  for (let j = 0; j < PATCH_SIZE; j++) {
+    meanA += tsPatchData[j];
+    meanB += newPatch[j];
+  }
+  meanA /= PATCH_SIZE;
+  meanB /= PATCH_SIZE;
+
+  let num = 0, da2 = 0, db2 = 0;
+  for (let j = 0; j < PATCH_SIZE; j++) {
+    const da = tsPatchData[j] - meanA;
+    const db = newPatch[j]    - meanB;
+    num += da * db;
+    da2 += da * da;
+    db2 += db * db;
+  }
+
+  const denom      = Math.sqrt(da2 * db2);
+  const confidence = denom < 1e-6
+    ? 0
+    : Math.max(0, Math.min(1, (num / denom + 1) / 2));
 
   return { x: gx, y: gy, confidence };
+}
+
+// ─── Unified build patch + track ─────────────────────────────────────────────
+
+function buildPatch(
+  data:   Uint8ClampedArray,
+  width:  number,
+  height: number,
+  cx:     number,
+  cy:     number
+): void {
+  if (wasmModule && patchData) {
+    wasmModule.build_patch(data, width, height, cx, cy, patchData);
+  } else {
+    buildPatchTS(data, width, height, cx, cy);
+  }
+}
+
+function trackPoint(
+  data:   Uint8ClampedArray,
+  width:  number,
+  height: number,
+  cx:     number,
+  cy:     number
+): { x: number; y: number; confidence: number } {
+  if (wasmModule && patchData && outData) {
+    wasmModule.track_point(
+      data, width, height,
+      cx, cy,
+      patchData, outData
+    );
+    return {
+      x:          outData[0],
+      y:          outData[1],
+      confidence: outData[2],
+    };
+  }
+
+  return trackPointTS(data, width, height, cx, cy);
+}
+
+// ─── Resolve pixel data ───────────────────────────────────────────────────────
+
+function resolvePixels(msg: TrackMessage): Uint8ClampedArray | null {
+  if (sharedPixels) return sharedPixels;
+  if (msg.imageData) return msg.imageData.data;
+  return null;
+}
+
+function resolveSize(msg: TrackMessage): { w: number; h: number } {
+  if (frameWidth && frameHeight) {
+    return { w: frameWidth, h: frameHeight };
+  }
+  if (msg.imageData) {
+    return { w: msg.imageData.width, h: msg.imageData.height };
+  }
+  return { w: 0, h: 0 };
 }
 
 // ─── Message handler ──────────────────────────────────────────────────────────
@@ -244,12 +346,7 @@ self.onmessage = (event: MessageEvent<IncomingMessage>) => {
   switch (msg.type) {
 
     case "init": {
-      /**
-       * Receive shared buffers from main thread.
-       * No copy — both threads access the same memory.
-       */
       sharedPixels = new Uint8ClampedArray(msg.sharedBuffer);
-      signalArray  = new Int32Array(msg.signalBuffer);
       frameWidth   = msg.width;
       frameHeight  = msg.height;
 
@@ -259,22 +356,16 @@ self.onmessage = (event: MessageEvent<IncomingMessage>) => {
     }
 
     case "seed": {
-      if (!sharedPixels || !frameWidth || !frameHeight) break;
+      if (!sharedPixels || !frameWidth || !frameHeight) {
+        console.warn("Seed called before init");
+        const ack: AckMessage = { type: "ack" };
+        self.postMessage(ack);
+        break;
+      }
 
       currentPoint = { x: msg.x, y: msg.y };
 
-      /**
-       * Pre-compute and cache the patch and gradients from the seed frame.
-       * This avoids recomputing them on every subsequent track call.
-       */
-      buildPrevPatchAndGradients(
-        sharedPixels,
-        frameWidth,
-        frameHeight,
-        msg.x,
-        msg.y,
-        PATCH_RADIUS
-      );
+      buildPatch(sharedPixels, frameWidth, frameHeight, msg.x, msg.y);
 
       const ack: AckMessage = { type: "ack" };
       self.postMessage(ack);
@@ -282,42 +373,27 @@ self.onmessage = (event: MessageEvent<IncomingMessage>) => {
     }
 
     case "track": {
-      if (!sharedPixels || !currentPoint || !prevPatch) {
+      const pixels = resolvePixels(msg);
+      const { w, h } = resolveSize(msg);
+
+      if (!pixels || !currentPoint || !w || !h) {
         const result: TrackResult = {
-          type: "result", x: 0, y: 0, confidence: 0, tracked: false,
+          type:       "result",
+          x:          0,
+          y:          0,
+          confidence: 0,
+          tracked:    false,
         };
         self.postMessage(result);
         break;
       }
 
-      /**
-       * Read directly from shared memory — zero copy.
-       * Main thread has already written the new frame pixels here.
-       */
-      const { x, y, confidence } = runLucasKanade(
-        sharedPixels,
-        frameWidth,
-        frameHeight,
-        currentPoint.x,
-        currentPoint.y
-      );
+      const { x, y, confidence } = trackPoint(pixels, w, h, currentPoint.x, currentPoint.y);
 
       const tracked = confidence >= MIN_CONFIDENCE;
 
       if (tracked) {
-        /**
-         * Update cached patch and gradients for next frame.
-         * Only do this when confidence is good — prevents drift accumulation.
-         */
-        buildPrevPatchAndGradients(
-          sharedPixels,
-          frameWidth,
-          frameHeight,
-          x,
-          y,
-          PATCH_RADIUS
-        );
-
+        buildPatch(pixels, w, h, x, y);
         currentPoint = { x, y };
       }
 
@@ -334,11 +410,21 @@ self.onmessage = (event: MessageEvent<IncomingMessage>) => {
     }
 
     case "reset": {
-      prevPatch    = null;
-      prevIx       = null;
-      prevIy       = null;
       currentPoint = null;
+      tsPatchData  = null;
+      tsIxData     = null;
+      tsIyData     = null;
+      patchData    = wasmModule ? new Float32Array(PATCH_SIZE * 3) : null;
+      console.log("Worker reset");
       break;
     }
   }
 };
+
+// ─── Startup ──────────────────────────────────────────────────────────────────
+
+loadWasm().then((success) => {
+  console.log(`Worker startup complete — WASM: ${success ? "yes" : "no (TS fallback)"}`);
+  const ack: AckMessage = { type: "ack" };
+  self.postMessage(ack);
+});

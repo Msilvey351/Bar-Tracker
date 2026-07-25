@@ -4,9 +4,10 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "npm run build:wasm && next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "build:wasm": "cd crates/tracker && wasm-pack build --target web --out-dir ../../public/wasm/tracker --release"
   },
   "dependencies": {
     "clsx": "^2.1.1",

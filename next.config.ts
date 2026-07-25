@@ -5,10 +5,6 @@ const nextConfig: NextConfig = {
   async headers() {
     return [
       {
-        /**
-         * Apply COOP + COEP headers to all routes.
-         * Required for SharedArrayBuffer and Atomics to work.
-         */
         source: "/(.*)",
         headers: [
           {
@@ -17,7 +13,7 @@ const nextConfig: NextConfig = {
           },
           {
             key: "Cross-Origin-Embedder-Policy",
-            value: "require-corp",
+            value: "credentialless",  // ← changed from "require-corp"
           },
         ],
       },
