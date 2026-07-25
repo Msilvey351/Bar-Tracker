@@ -8,7 +8,7 @@ interface Props {
   calibration: CalibrationPoints | null;
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ─── Colour helpers ───────────────────────────────────────────────────────────
 
 function dropColour(pct: number) {
   if (pct <= 0)  return "text-white/40";
@@ -24,7 +24,14 @@ function peakColour(val: number, rep1: number) {
   return "text-red-400";
 }
 
-function fmt(n: number, decimals = 2) {
+function pauseColour(seconds: number) {
+  if (seconds <= 0)   return "";
+  if (seconds < 0.5)  return "text-purple-300";
+  if (seconds < 1.0)  return "text-purple-400";
+  return "text-purple-300 font-bold";
+}
+
+function fmt(n: number, decimals = 2): string {
   return isNaN(n) || !isFinite(n) ? "—" : n.toFixed(decimals);
 }
 
@@ -42,7 +49,7 @@ function Td({
   children,
   className,
 }: {
-  children:  React.ReactNode;
+  children:   React.ReactNode;
   className?: string;
 }) {
   return (
@@ -58,9 +65,9 @@ function StatCard({
   sub,
   valueClass,
 }: {
-  label:      string;
-  value:      string;
-  sub?:       string;
+  label:       string;
+  value:       string;
+  sub?:        string;
   valueClass?: string;
 }) {
   return (
@@ -87,46 +94,58 @@ export default function RepTable({ stats, calibration }: Props) {
   }
 
   // ── Unit conversion ─────────────────────────────────────────────────────────
-  const unit      = calibration ? "m/s" : "px/s";
-  const isCalib   = calibration !== null;
+  const isCalib = calibration !== null;
+  const unit    = isCalib ? "m/s" : "px/s";
 
-  /** Convert px/s → m/s if calibrated, otherwise return raw px/s */
   const convert = (pxPerS: number): number =>
     isCalib ? pxPerS / calibration!.pxPerM : pxPerS;
 
-  /** Format a velocity value with appropriate decimals */
   const fmtV = (pxPerS: number): string => {
     const v = convert(pxPerS);
     return isCalib ? fmt(v, 2) : fmt(v, 0);
   };
 
-  const rep1Peak    = stats[0]?.peakConcentricVelocity ?? 1;
-  const lastStat    = stats[stats.length - 1];
+  const rep1Peak = stats[0]?.peakConcentricVelocity ?? 1;
+  const lastStat = stats[stats.length - 1];
+
+  // Whether any rep has a detected pause
+  const anyPause = stats.some((s) => s.pauseDuration >= 0.2);
 
   return (
     <div className="flex flex-col gap-4">
 
-      {/* ── Calibration notice ─────────────────────────────────────────────── */}
+      {/* Calibration notice */}
       {isCalib ? (
         <div className="flex items-center gap-2 bg-emerald-500/10 border border-emerald-500/20 rounded-xl px-4 py-2 text-xs text-emerald-400">
           <span>✅</span>
           <span>
             Calibrated — {calibration!.diameterCm}cm plate ·{" "}
             {calibration!.pxPerCm.toFixed(1)} px/cm ·{" "}
-            velocities shown in <strong>m/s</strong>
+            velocities in <strong>m/s</strong>
           </span>
         </div>
       ) : (
         <div className="flex items-center gap-2 bg-amber-500/10 border border-amber-500/20 rounded-xl px-4 py-2 text-xs text-amber-400">
           <span>⚠️</span>
           <span>
-            Not calibrated — velocities shown in <strong>px/s</strong>.
+            Not calibrated — velocities in <strong>px/s</strong>.
             Re-analyse with plate calibration to get real-world m/s values.
           </span>
         </div>
       )}
 
-      {/* ── Summary cards ──────────────────────────────────────────────────── */}
+      {/* Pause detected notice */}
+      {anyPause && (
+        <div className="flex items-center gap-2 bg-purple-500/10 border border-purple-500/20 rounded-xl px-4 py-2 text-xs text-purple-400">
+          <span>⏸</span>
+          <span>
+            Pause bench detected — pause durations shown in the{" "}
+            <strong>Pause</strong> column and shaded on the velocity chart.
+          </span>
+        </div>
+      )}
+
+      {/* Summary cards */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <StatCard
           label="Total Reps"
@@ -150,7 +169,7 @@ export default function RepTable({ stats, calibration }: Props) {
         />
       </div>
 
-      {/* ── Table ──────────────────────────────────────────────────────────── */}
+      {/* Table */}
       <div className="overflow-x-auto rounded-xl border border-white/10">
         <table className="w-full text-sm">
           <thead>
@@ -181,6 +200,14 @@ export default function RepTable({ stats, calibration }: Props) {
                 <br />
                 <span className="font-normal text-white/40">(s)</span>
               </Th>
+              {/* Only show pause column if at least one rep has a pause */}
+              {anyPause && (
+                <Th>
+                  Pause
+                  <br />
+                  <span className="font-normal text-white/40">(s)</span>
+                </Th>
+              )}
               <Th>
                 Speed Drop
                 <br />
@@ -199,12 +226,14 @@ export default function RepTable({ stats, calibration }: Props) {
               >
                 {/* Rep number badge */}
                 <td className="px-4 py-3 text-center">
-                  <span className={clsx(
-                    "inline-flex items-center justify-center w-7 h-7 rounded-full text-xs font-bold",
-                    i === 0
-                      ? "bg-orange-500 text-white"
-                      : "bg-white/10 text-white/70"
-                  )}>
+                  <span
+                    className={clsx(
+                      "inline-flex items-center justify-center w-7 h-7 rounded-full text-xs font-bold",
+                      i === 0
+                        ? "bg-orange-500 text-white"
+                        : "bg-white/10 text-white/70"
+                    )}
+                  >
                     {s.repNumber}
                   </span>
                 </td>
@@ -226,12 +255,31 @@ export default function RepTable({ stats, calibration }: Props) {
                 {/* Eccentric duration */}
                 <Td>{fmt(s.eccentricDuration, 2)}</Td>
 
+                {/* Pause duration — only if column is visible */}
+                {anyPause && (
+                  <Td className={pauseColour(s.pauseDuration)}>
+                    {s.pauseDuration >= 0.2 ? (
+                      <span className="flex items-center justify-center gap-1">
+                        <span>⏸</span>
+                        <span>{fmt(s.pauseDuration, 2)}</span>
+                      </span>
+                    ) : (
+                      <span className="text-white/20">—</span>
+                    )}
+                  </Td>
+                )}
+
                 {/* Speed drop */}
                 <Td className={clsx("font-semibold", dropColour(s.percentSpeedDrop))}>
                   {i === 0 ? (
-                    <span className="text-white/30 font-normal text-xs">baseline</span>
+                    <span className="text-white/30 font-normal text-xs">
+                      baseline
+                    </span>
                   ) : (
-                    `${s.percentSpeedDrop > 0 ? "−" : "+"}${fmt(Math.abs(s.percentSpeedDrop), 1)}%`
+                    `${s.percentSpeedDrop > 0 ? "−" : "+"}${fmt(
+                      Math.abs(s.percentSpeedDrop),
+                      1
+                    )}%`
                   )}
                 </Td>
               </tr>
@@ -243,8 +291,7 @@ export default function RepTable({ stats, calibration }: Props) {
       <p className="text-white/20 text-xs text-center">
         {isCalib
           ? `1 px = ${(1 / calibration!.pxPerCm).toFixed(2)} cm · based on ${calibration!.diameterCm}cm plate diameter`
-          : "Calibrate with plate diameter to convert px/s → m/s"
-        }
+          : "Calibrate with plate diameter to convert px/s → m/s"}
       </p>
     </div>
   );

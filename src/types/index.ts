@@ -23,36 +23,37 @@ export interface AnalysisResult {
 /** App-level state machine stages */
 export type AppStage = "upload" | "seed" | "analysing" | "results";
 
-// ─── VBT / Rep detection types ────────────────────────────────────────────────
-
 /** Movement phase for a single frame */
 export type Phase = "concentric" | "eccentric" | "rest";
 
-/** One frame with velocity + phase attached */
+/** One frame with velocity and phase attached */
 export interface VelocityFrame {
   frameIndex: number;
   timeSeconds: number;
   position: Point;
-  /** Raw pixel/s velocity */
+  /** Raw pixel/s speed magnitude */
   velocityRaw: number;
-  /** Smoothed pixel/s velocity */
+  /** Smoothed pixel/s speed magnitude */
   velocitySmoothed: number;
-  /** Signed: negative = bar moving down (eccentric for squat/bench),
-   *  positive = bar moving up (concentric for squat/bench).
-   *  For deadlift the sign convention flips — handled in repDetection. */
+  /**
+   * Signed vertical velocity in px/s.
+   * Positive = bar moving DOWN (eccentric).
+   * Negative = bar moving UP (concentric).
+   */
   velocityY: number;
   phase: Phase;
-  repIndex: number | null;   // null = rest/between reps
+  /** null = not part of any detected rep */
+  repIndex: number | null;
 }
 
-/** Per-rep statistics — the VBT table row */
+/** Per-rep statistics shown in the VBT table */
 export interface RepStats {
   repNumber: number;
-  /** Average velocity during concentric phase (px/s) */
+  /** Average smoothed speed during concentric phase (px/s) */
   avgConcentricVelocity: number;
-  /** Average velocity during eccentric phase (px/s) */
+  /** Average smoothed speed during eccentric phase (px/s) */
   avgEccentricVelocity: number;
-  /** Peak smoothed velocity during concentric phase (px/s) */
+  /** Peak smoothed speed during concentric phase (px/s) */
   peakConcentricVelocity: number;
   /** Duration of concentric phase in seconds */
   concentricDuration: number;
@@ -60,11 +61,21 @@ export interface RepStats {
   eccentricDuration: number;
   /** % drop from rep 1 peak concentric velocity */
   percentSpeedDrop: number;
+  /**
+   * Duration of intentional pause within the rep in seconds.
+   * 0 if no meaningful pause was detected.
+   */
+  pauseDuration: number;
+  /**
+   * Video timestamp (seconds) at which the pause started.
+   * null if no meaningful pause was detected.
+   */
+  pauseStartTime: number | null;
 }
 
-/** Plate calibration — two clicked points defining plate diameter */
+/** Plate calibration from user-clicked points */
 export interface CalibrationPoints {
-  top:    Point;
+  top: Point;
   bottom: Point;
   /** Diameter in cm as entered by user */
   diameterCm: number;

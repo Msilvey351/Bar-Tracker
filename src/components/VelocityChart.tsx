@@ -9,6 +9,7 @@ import {
   CartesianGrid,
   Tooltip,
   ReferenceLine,
+  ReferenceArea,
   ResponsiveContainer,
 } from "recharts";
 import type { VelocityFrame, RepStats, CalibrationPoints } from "@/types";
@@ -19,27 +20,20 @@ interface Props {
   calibration: CalibrationPoints | null;
 }
 
-/**
- * Phase colours:
- *   concentric = orange (positive, bar moving up)
- *   eccentric  = blue   (negative, bar moving down)
- *   rest/unassigned = grey (shown but not counted as a rep)
- */
 const PHASE_COLOUR = {
-  concentric:  "#f97316",
-  eccentric:   "#3b82f6",
-  unassigned:  "#6b7280",
-  rest:        "#6b7280",
+  concentric: "#f97316",
+  eccentric:  "#3b82f6",
+  unassigned: "#6b7280",
+  pause:      "#a855f7",
 } as const;
 
 interface ChartPoint {
-  time:        string;
-  background:  number | null;
-  concentric:  number | null;
-  eccentric:   number | null;
-  unassigned:  number | null;
-  phase:       string;
-  repIndex:    number | null;
+  time:       string;
+  concentric: number | null;
+  eccentric:  number | null;
+  unassigned: number | null;
+  phase:      string;
+  repIndex:   number | null;
 }
 
 export default function VelocityChart({
@@ -58,51 +52,35 @@ export default function VelocityChart({
   };
 
   // ── Build chart data ────────────────────────────────────────────────────────
-  /**
-   * All frames are plotted.
-   *
-   * Frames assigned to a rep:
-   *   concentric = positive (orange)
-   *   eccentric  = negative (blue)
-   *
-   * Frames NOT assigned to a rep (rest, unracking, reracking):
-   *   shown as signed velocity but coloured grey
-   *   this lets the user see what was detected but not counted
-   */
   const data: ChartPoint[] = vFrames.map((f) => {
     const speed  = toDisplay(f.velocitySmoothed);
     const isDown = f.velocityY > 0;
 
     /**
-     * Sign:
+     * Sign convention:
      *   bar moving down = negative (eccentric)
      *   bar moving up   = positive (concentric)
      */
-    const signed = f.velocitySmoothed < 1e-6
-      ? 0
-      : isDown ? -speed : speed;
+    const signed =
+      f.velocitySmoothed < 1e-6
+        ? 0
+        : isDown
+        ? -speed
+        : speed;
 
     const hasRep = f.repIndex !== null;
 
     return {
       time:       f.timeSeconds.toFixed(2),
-      background: null,
-
-      concentric: hasRep && f.phase === "concentric" ? signed  : null,
-      eccentric:  hasRep && f.phase === "eccentric"  ? signed  : null,
-
-      /**
-       * Unassigned = any frame where the bar is moving but not counted as a rep.
-       * This includes unracking, reracking, pauses, wobble.
-       */
-      unassigned: !hasRep && Math.abs(signed) > 0 ? signed : null,
-
-      phase:    f.phase,
-      repIndex: f.repIndex,
+      concentric: hasRep && f.phase === "concentric" ?  signed : null,
+      eccentric:  hasRep && f.phase === "eccentric"  ?  signed : null,
+      unassigned: !hasRep && Math.abs(signed) > 0    ?  signed : null,
+      phase:      f.phase,
+      repIndex:   f.repIndex,
     };
   });
 
-  // ── Rep boundary reference lines ────────────────────────────────────────────
+  // ── Rep boundary lines ──────────────────────────────────────────────────────
   const repBoundaries = repStats.map((s) => {
     const firstFrame = vFrames.find(
       (f) => f.repIndex === s.repNumber - 1 && f.phase !== "rest"
@@ -113,6 +91,17 @@ export default function VelocityChart({
     };
   });
 
+  // ── Pause zones ─────────────────────────────────────────────────────────────
+  const pauseZones = repStats
+    .filter((s) => s.pauseDuration >= 0.2 && s.pauseStartTime !== null)
+    .map((s) => ({
+      repNumber: s.repNumber,
+      x1:        s.pauseStartTime!.toFixed(2),
+      x2:        (s.pauseStartTime! + s.pauseDuration).toFixed(2),
+      label:     `${s.pauseDuration.toFixed(2)}s`,
+    }));
+
+  // ── Axis scale ──────────────────────────────────────────────────────────────
   const maxV    = Math.max(...vFrames.map((f) => toDisplay(f.velocitySmoothed)), 1);
   const axisMax = isCalib
     ? Math.ceil(maxV * 1.2 * 100) / 100
@@ -157,19 +146,36 @@ export default function VelocityChart({
           : PHASE_COLOUR.eccentric
         : PHASE_COLOUR.unassigned;
 
-    const label2 =
+    const phaseLabel =
       repIdx !== null
         ? `${phase} · Rep ${repIdx + 1}`
         : phase === "rest"
         ? "rest"
         : "not counted";
 
+    // Check if this time falls within a pause zone
+    const labelFloat = parseFloat(label ?? "0");
+    const inPause = pauseZones.some(
+      (z) =>
+        labelFloat >= parseFloat(z.x1) &&
+        labelFloat <= parseFloat(z.x2)
+    );
+
     return (
       <div className="bg-[#1a1a1a] border border-white/10 rounded-lg px-3 py-2 text-xs shadow-xl">
         <p className="text-white/40 mb-1">{label}s</p>
-        <p className="font-bold capitalize mb-0.5" style={{ color: colour }}>
-          {label2}
+
+        {inPause && (
+          <p className="text-purple-400 font-semibold mb-0.5">⏸ Pause</p>
+        )}
+
+        <p
+          className="font-bold capitalize mb-0.5"
+          style={{ color: inPause ? PHASE_COLOUR.pause : colour }}
+        >
+          {phaseLabel}
         </p>
+
         <p className="text-white font-mono">
           {sign}{isCalib ? val.toFixed(3) : Math.round(val)} {unit}
         </p>
@@ -182,10 +188,10 @@ export default function VelocityChart({
     <div className="bg-white/5 border border-white/10 rounded-xl p-6 flex flex-col gap-6">
 
       {/* Header */}
-      <div className="flex items-start justify-between">
+      <div className="flex items-start justify-between gap-4">
         <div>
           <h3 className="font-bold text-white/80">Velocity Trace</h3>
-          <p className="text-white/30 text-xs mt-1 flex items-center gap-3 flex-wrap">
+          <p className="text-white/30 text-xs mt-1 flex flex-wrap gap-x-4 gap-y-1">
             <span>
               <span style={{ color: PHASE_COLOUR.concentric }}>■</span>{" "}
               Concentric (positive)
@@ -198,6 +204,12 @@ export default function VelocityChart({
               <span style={{ color: PHASE_COLOUR.unassigned }}>■</span>{" "}
               Not counted
             </span>
+            {pauseZones.length > 0 && (
+              <span>
+                <span style={{ color: PHASE_COLOUR.pause }}>■</span>{" "}
+                Pause
+              </span>
+            )}
           </p>
         </div>
 
@@ -259,6 +271,24 @@ export default function VelocityChart({
             stroke="rgba(255,255,255,0.25)"
             strokeWidth={1.5}
           />
+
+          {/* Pause shading — drawn before data lines so they sit behind */}
+          {pauseZones.map((z) => (
+            <ReferenceArea
+              key={`pause-${z.repNumber}`}
+              x1={z.x1}
+              x2={z.x2}
+              fill="rgba(168, 85, 247, 0.12)"
+              stroke="rgba(168, 85, 247, 0.35)"
+              strokeWidth={1}
+              label={{
+                value:    `⏸ ${z.label}`,
+                position: "insideTop",
+                fill:     "rgba(168, 85, 247, 0.8)",
+                fontSize: 10,
+              }}
+            />
+          ))}
 
           {/* Rep boundary reference lines */}
           {repBoundaries.map((b) => (
@@ -352,13 +382,23 @@ export default function VelocityChart({
                     style={{ height: "56px" }}
                   >
                     <div
-                      className="w-full rounded-t-sm"
+                      className="w-full rounded-t-sm relative"
                       style={{
                         height:     `${barH}%`,
                         background: colour,
                         opacity:    0.85,
                       }}
-                    />
+                    >
+                      {/* Pause indicator on bar chart */}
+                      {s.pauseDuration >= 0.2 && (
+                        <div
+                          className="absolute -top-4 left-0 right-0 flex justify-center"
+                          title={`Pause: ${s.pauseDuration.toFixed(2)}s`}
+                        >
+                          <span className="text-purple-400 text-xs">⏸</span>
+                        </div>
+                      )}
+                    </div>
                   </div>
 
                   <span className="text-white/30 text-xs">
