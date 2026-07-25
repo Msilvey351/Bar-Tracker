@@ -5,20 +5,30 @@ import type { AnalysisResult, FrameResult, Point } from "@/types";
 import { seekVideo, waitUntilReady } from "@/lib/seekVideo";
 
 interface UseVideoAnalyserReturn {
-  analyse:     (file: File, seed: Point) => Promise<void>;
-  progress:    number;
-  isAnalysing: boolean;
-  result:      AnalysisResult | null;
-  error:       string | null;
+  analyse:        (file: File, seed: Point) => Promise<void>;
+  progress:       number;
+  isAnalysing:    boolean;
+  result:         AnalysisResult | null;
+  error:          string | null;
+  /** Partial frames emitted during analysis for live chart */
+  liveFrames:     FrameResult[];
+  liveFps:        number;
+  liveVideoDims:  { width: number; height: number } | null;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-/** Priority 2: reduced tracking resolution */
 const SCALED_WIDTH             = 320;
 const MAX_JUMP_HEIGHT_FRACTION = 0.18;
 const MIN_MAX_JUMP_PX          = 20;
 const SMOOTHING_WINDOW         = 3;
+
+/**
+ * How many frames to batch before emitting a live update.
+ * Lower = more responsive chart but more re-renders.
+ * Higher = fewer re-renders but chart updates less often.
+ */
+const LIVE_UPDATE_EVERY_N_FRAMES = 8;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -60,7 +70,6 @@ function smoothPositions(frames: FrameResult[]): FrameResult[] {
   });
 }
 
-/** Check if SharedArrayBuffer is available in this browser */
 function sharedArrayBufferAvailable(): boolean {
   try {
     const test = new SharedArrayBuffer(1);
@@ -73,10 +82,13 @@ function sharedArrayBufferAvailable(): boolean {
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 
 export function useVideoAnalyser(): UseVideoAnalyserReturn {
-  const [progress,    setProgress]    = useState(0);
-  const [isAnalysing, setIsAnalysing] = useState(false);
-  const [result,      setResult]      = useState<AnalysisResult | null>(null);
-  const [error,       setError]       = useState<string | null>(null);
+  const [progress,      setProgress]      = useState(0);
+  const [isAnalysing,   setIsAnalysing]   = useState(false);
+  const [result,        setResult]        = useState<AnalysisResult | null>(null);
+  const [error,         setError]         = useState<string | null>(null);
+  const [liveFrames,    setLiveFrames]    = useState<FrameResult[]>([]);
+  const [liveFps,       setLiveFps]       = useState(0);
+  const [liveVideoDims, setLiveVideoDims] = useState<{ width: number; height: number } | null>(null);
 
   const videoRef       = useRef<HTMLVideoElement | null>(null);
   const canvasRef      = useRef<HTMLCanvasElement | null>(null);
@@ -85,7 +97,7 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
   const sharedPixelRef = useRef<Uint8ClampedArray | null>(null);
   const canUseSAB      = useRef(false);
 
-  // ── Spin up worker once ────────────────────────────────────────────────
+  // ── Spin up worker ───────────────────────────────────────────────────────
   useEffect(() => {
     canUseSAB.current = sharedArrayBufferAvailable();
 
@@ -96,7 +108,7 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
 
     workerRef.current = worker;
 
-      // Forward worker console messages to main DevTools console
+    // Forward worker console to main DevTools
     worker.addEventListener("message", (e) => {
       if (e.data?.type === "log") {
         if (e.data.level === "warn") {
@@ -113,16 +125,16 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
     };
   }, []);
 
-  // ── Init shared buffer for a given frame size ──────────────────────────
+  // ── Init shared buffer ───────────────────────────────────────────────────
   const initSharedBuffer = useCallback(
     (width: number, height: number): Promise<void> => {
       return new Promise((resolve) => {
         const worker = workerRef.current;
         if (!worker || !canUseSAB.current) { resolve(); return; }
 
-        const byteLength  = width * height * 4;
-        const sharedBuf   = new SharedArrayBuffer(byteLength);
-        const signalBuf   = new SharedArrayBuffer(4); // one Int32
+        const byteLength = width * height * 4;
+        const sharedBuf  = new SharedArrayBuffer(byteLength);
+        const signalBuf  = new SharedArrayBuffer(4);
 
         sharedBufRef.current   = sharedBuf;
         sharedPixelRef.current = new Uint8ClampedArray(sharedBuf);
@@ -135,7 +147,6 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
         };
 
         worker.addEventListener("message", handler);
-
         worker.postMessage({
           type:         "init",
           sharedBuffer: sharedBuf,
@@ -148,11 +159,10 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
     []
   );
 
-  // ── Frame capture ──────────────────────────────────────────────────────
+  // ── Frame capture ────────────────────────────────────────────────────────
   const captureFrame = useCallback((): ImageData | null => {
     const video  = videoRef.current;
     const canvas = canvasRef.current;
-
     if (!video || !canvas) return null;
     if (video.videoWidth === 0 || video.videoHeight === 0) return null;
 
@@ -166,27 +176,18 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
     if (!ctx) return null;
 
     ctx.drawImage(video, 0, 0, SCALED_WIDTH, h);
-
     return ctx.getImageData(0, 0, SCALED_WIDTH, h);
   }, []);
 
-  /**
-   * Write frame pixels into the shared buffer.
-   * If SharedArrayBuffer is not available, falls back to returning ImageData.
-   */
-  const writeFrameToShared = useCallback(
-    (frame: ImageData): boolean => {
-      const shared = sharedPixelRef.current;
-      if (!shared || !canUseSAB.current) return false;
-      if (shared.byteLength !== frame.data.byteLength) return false;
+  const writeFrameToShared = useCallback((frame: ImageData): boolean => {
+    const shared = sharedPixelRef.current;
+    if (!shared || !canUseSAB.current) return false;
+    if (shared.byteLength !== frame.data.byteLength) return false;
+    shared.set(frame.data);
+    return true;
+  }, []);
 
-      shared.set(frame.data);
-      return true;
-    },
-    []
-  );
-
-  // ── Worker communication ───────────────────────────────────────────────
+  // ── Worker communication ─────────────────────────────────────────────────
   const workerSend = useCallback(
     (
       message: Record<string, unknown>,
@@ -224,16 +225,9 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
   );
 
   const workerTrack = useCallback(
-    async (
-      frame: ImageData
-    ): Promise<{ x: number; y: number; confidence: number; tracked: boolean }> => {
-      /**
-       * Priority 4:
-       * If SharedArrayBuffer is available, write pixels to shared memory
-       * and tell the worker to read from there — zero copy.
-       *
-       * Fallback: transfer the buffer (Priority 3 behaviour).
-       */
+    async (frame: ImageData): Promise<{
+      x: number; y: number; confidence: number; tracked: boolean;
+    }> => {
       const wroteToShared = writeFrameToShared(frame);
 
       if (wroteToShared) {
@@ -241,25 +235,25 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
         return result as { x: number; y: number; confidence: number; tracked: boolean };
       }
 
-      // Fallback — transfer buffer
       const result = await workerSend(
         { type: "track", imageData: frame },
         "result",
         [frame.data.buffer]
       );
-
       return result as { x: number; y: number; confidence: number; tracked: boolean };
     },
     [workerSend, writeFrameToShared]
   );
 
-  // ── Main analysis loop ─────────────────────────────────────────────────
+  // ── Main analysis ────────────────────────────────────────────────────────
   const analyse = useCallback(
     async (file: File, seed: Point) => {
       setIsAnalysing(true);
       setProgress(0);
       setResult(null);
       setError(null);
+      setLiveFrames([]);
+      setLiveVideoDims(null);
 
       const video = document.createElement("video");
       video.muted       = true;
@@ -294,40 +288,36 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
         const scale       = SCALED_WIDTH / videoWidth;
         const scaledH     = Math.round(videoHeight * scale);
 
-        let currentPoint: Point = {
-          x: seed.x * scale,
-          y: seed.y * scale,
-        };
+        // Emit video dims immediately so live chart can scale correctly
+        setLiveFps(fps);
+        setLiveVideoDims({ width: videoWidth, height: videoHeight });
 
+        let currentPoint: Point  = { x: seed.x * scale, y: seed.y * scale };
         let previousPoint: Point | null = null;
 
         await waitUntilReady(video);
         video.pause();
         await seekVideo(video, 0);
-
-        // Extra paint time [1]
         await new Promise((r) => setTimeout(r, 100));
 
         const firstFrame = captureFrame();
         if (!firstFrame) throw new Error("Could not capture first frame");
 
-        /**
-         * Priority 4: init shared buffer sized for tracking resolution.
-         * This only allocates once per analysis session.
-         */
         await initSharedBuffer(SCALED_WIDTH, scaledH);
-
-        // Write first frame to shared buffer and seed worker
         writeFrameToShared(firstFrame);
         await workerSeed(currentPoint.x, currentPoint.y);
 
-        const frames: FrameResult[] = [
+        // Accumulate all frames for final smoothing
+        const allFrames: FrameResult[] = [
           {
             frameIndex:  0,
             timeSeconds: 0,
             position:    { x: seed.x, y: seed.y },
           },
         ];
+
+        // Buffer for live updates — flushed every N frames
+        let liveBuffer: FrameResult[] = [...allFrames];
 
         for (let fi = 1; fi < totalFrames; fi++) {
           const t = fi / fps;
@@ -336,16 +326,11 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
           await seekVideo(video, t);
 
           const nextFrame = captureFrame();
-          if (!nextFrame) {
-            console.warn(`Frame ${fi} capture failed`);
-            continue;
-          }
+          if (!nextFrame) continue;
 
           const tracked = await workerTrack(nextFrame);
-
           const candidate: Point = { x: tracked.x, y: tracked.y };
 
-          // Max-jump sanity check
           const recentStep = previousPoint
             ? distance(currentPoint, previousPoint)
             : 0;
@@ -363,21 +348,36 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
             currentPoint  = candidate;
           }
 
-          frames.push({
+          const newFrame: FrameResult = {
             frameIndex:  fi,
             timeSeconds: t,
             position: {
               x: currentPoint.x / scale,
               y: currentPoint.y / scale,
             },
-          });
+          };
+
+          allFrames.push(newFrame);
+          liveBuffer.push(newFrame);
+
+          // ── Live update every N frames ──────────────────────────────────
+          if (fi % LIVE_UPDATE_EVERY_N_FRAMES === 0) {
+            // Snapshot current buffer for live display
+            // Use a shallow copy so React sees a new reference
+            const snapshot = [...liveBuffer];
+            setLiveFrames(snapshot);
+          }
 
           if (fi % 2 === 0) {
             setProgress(Math.round((fi / totalFrames) * 100));
           }
         }
 
-        const smoothed = smoothPositions(frames);
+        // Final smoothed result
+        const smoothed = smoothPositions(allFrames);
+
+        // Final live frames update with smoothed data
+        setLiveFrames(smoothed);
 
         setResult({
           frames:          smoothed,
@@ -406,5 +406,14 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
     [captureFrame, initSharedBuffer, writeFrameToShared, workerSeed, workerTrack]
   );
 
-  return { analyse, progress, isAnalysing, result, error };
+  return {
+    analyse,
+    progress,
+    isAnalysing,
+    result,
+    error,
+    liveFrames,
+    liveFps,
+    liveVideoDims,
+  };
 }
