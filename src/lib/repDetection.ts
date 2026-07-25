@@ -14,8 +14,8 @@ export interface AnalyseRepOptions {
 
 // ─── Tuning ───────────────────────────────────────────────────────────────────
 
-const SPEED_SMOOTH_WINDOW        = 15;
-const VY_SMOOTH_WINDOW           = 17;
+const SPEED_SMOOTH_WINDOW        = 25;
+const VY_SMOOTH_WINDOW           = 31;
 const MOVING_FRACTION            = 0.07;
 const DIRECTION_FRACTION         = 0.06;
 const MAX_REST_GAP_FRAMES        = 5;
