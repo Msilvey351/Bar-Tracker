@@ -10,7 +10,6 @@ interface UseVideoAnalyserReturn {
   isAnalysing:    boolean;
   result:         AnalysisResult | null;
   error:          string | null;
-  /** Partial frames emitted during analysis for live chart */
   liveFrames:     FrameResult[];
   liveFps:        number;
   liveVideoDims:  { width: number; height: number } | null;
@@ -23,16 +22,17 @@ const MAX_JUMP_HEIGHT_FRACTION = 0.18;
 const MIN_MAX_JUMP_PX          = 20;
 const SMOOTHING_WINDOW         = 3;
 
-/**
- * How many frames to batch before emitting a live update.
- * Lower = more responsive chart but more re-renders.
- * Higher = fewer re-renders but chart updates less often.
- */
-const LIVE_UPDATE_EVERY_N_FRAMES = 8;
+const isMobile = typeof navigator !== "undefined" &&
+  /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function chooseAnalysisFps(durationSeconds: number): number {
+  /**
+   * Same FPS on mobile and desktop.
+   * Lower FPS would reduce velocity accuracy and tracking reliability
+   * on fast movements, so we keep them the same.
+   */
   if (durationSeconds <= 25) return 60;
   if (durationSeconds <= 60) return 30;
   return 24;
@@ -147,12 +147,14 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
         };
 
         worker.addEventListener("message", handler);
+
         worker.postMessage({
           type:         "init",
           sharedBuffer: sharedBuf,
           signalBuffer: signalBuf,
           width,
           height,
+          isMobile,
         });
       });
     },
@@ -288,11 +290,10 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
         const scale       = SCALED_WIDTH / videoWidth;
         const scaledH     = Math.round(videoHeight * scale);
 
-        // Emit video dims immediately so live chart can scale correctly
         setLiveFps(fps);
         setLiveVideoDims({ width: videoWidth, height: videoHeight });
 
-        let currentPoint: Point  = { x: seed.x * scale, y: seed.y * scale };
+        let currentPoint:  Point       = { x: seed.x * scale, y: seed.y * scale };
         let previousPoint: Point | null = null;
 
         await waitUntilReady(video);
@@ -307,7 +308,6 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
         writeFrameToShared(firstFrame);
         await workerSeed(currentPoint.x, currentPoint.y);
 
-        // Accumulate all frames for final smoothing
         const allFrames: FrameResult[] = [
           {
             frameIndex:  0,
@@ -315,9 +315,6 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
             position:    { x: seed.x, y: seed.y },
           },
         ];
-
-        // Buffer for live updates — flushed every N frames
-        let liveBuffer: FrameResult[] = [...allFrames];
 
         for (let fi = 1; fi < totalFrames; fi++) {
           const t = fi / fps;
@@ -348,35 +345,29 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
             currentPoint  = candidate;
           }
 
-          const newFrame: FrameResult = {
+          allFrames.push({
             frameIndex:  fi,
             timeSeconds: t,
             position: {
               x: currentPoint.x / scale,
               y: currentPoint.y / scale,
             },
-          };
+          });
 
-          allFrames.push(newFrame);
-          liveBuffer.push(newFrame);
-
-          // ── Live update every N frames ──────────────────────────────────
-          if (fi % LIVE_UPDATE_EVERY_N_FRAMES === 0) {
-            // Snapshot current buffer for live display
-            // Use a shallow copy so React sees a new reference
-            const snapshot = [...liveBuffer];
-            setLiveFrames(snapshot);
-          }
-
+          // Progress update every other frame
           if (fi % 2 === 0) {
             setProgress(Math.round((fi / totalFrames) * 100));
           }
         }
 
-        // Final smoothed result
+        // Smooth and emit final result
         const smoothed = smoothPositions(allFrames);
 
-        // Final live frames update with smoothed data
+        /**
+         * Emit live frames only once at the end.
+         * No per-frame updates during analysis — keeps all CPU
+         * available for seeking and tracking.
+         */
         setLiveFrames(smoothed);
 
         setResult({

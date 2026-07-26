@@ -1,5 +1,5 @@
 /**
- * Tracker Web Worker — Priority 5 update
+ * Tracker Web Worker — Priority 5
  *
  * Uses WASM optical flow compiled from Rust.
  * Falls back to TypeScript implementation if WASM fails to load.
@@ -14,6 +14,7 @@ interface InitMessage {
   signalBuffer: SharedArrayBuffer;
   width:        number;
   height:       number;
+  isMobile:     boolean;
 }
 
 interface SeedMessage {
@@ -56,54 +57,44 @@ interface LogMessage {
 }
 
 // ─── Console forwarding ───────────────────────────────────────────────────────
-// Forwards worker console messages to the main thread so they appear
-// in DevTools even though workers have a separate console context.
 
 const origLog  = console.log.bind(console);
 const origWarn = console.warn.bind(console);
 
 console.log = (...args: unknown[]) => {
   origLog(...args);
-  const msg: LogMessage = {
-    type:  "log",
-    level: "log",
-    args:  args.map(String),
-  };
-  self.postMessage(msg);
+  self.postMessage({ type: "log", level: "log", args: args.map(String) } as LogMessage);
 };
 
 console.warn = (...args: unknown[]) => {
   origWarn(...args);
-  const msg: LogMessage = {
-    type:  "log",
-    level: "warn",
-    args:  args.map(String),
-  };
-  self.postMessage(msg);
+  self.postMessage({ type: "log", level: "warn", args: args.map(String) } as LogMessage);
 };
 
 // ─── Tuning ───────────────────────────────────────────────────────────────────
 
 const PATCH_RADIUS   = 15;
-const MAX_ITERATIONS = 20;
-const EPSILON        = 0.01;
-const MIN_CONFIDENCE = 0.28;
 const PATCH_SIZE     = (PATCH_RADIUS * 2 + 1) ** 2;
+const MIN_CONFIDENCE = 0.28;
+const EPSILON        = 0.01;
+
+/**
+ * Maximum LK iterations.
+ * Most frames converge in 3–5 iterations via the EPSILON early-exit.
+ * Reducing on mobile only affects the rare frames that haven't converged —
+ * those are usually fast-movement frames where extra iterations don't help.
+ */
+let MAX_ITERATIONS = 20;
 
 // ─── WASM module ──────────────────────────────────────────────────────────────
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-let wasmModule: any  = null;
-let patchData: Float32Array | null = null;
-let outData:   Float32Array | null = null;
+let wasmModule: any        = null;
+let patchData:  Float32Array | null = null;
+let outData:    Float32Array | null = null;
 
 async function loadWasm(): Promise<boolean> {
   try {
-    /**
-     * Dynamic import inside a Web Worker requires an absolute URL.
-     * Relative paths like "/wasm/..." don't resolve correctly inside workers.
-     * self.location.origin gives us the correct base for any environment.
-     */
     const wasmJsUrl  = `${self.location.origin}/wasm/tracker/tracker.js`;
     const wasmBinUrl = `${self.location.origin}/wasm/tracker/tracker_bg.wasm`;
 
@@ -111,8 +102,7 @@ async function loadWasm(): Promise<boolean> {
 
     const mod = await import(/* webpackIgnore: true */ wasmJsUrl);
 
-    // Pass absolute URL to the wasm binary initialiser
-    await mod.default(wasmBinUrl);
+    await mod.default({ module_or_path: wasmBinUrl });
 
     wasmModule = mod;
     patchData  = new Float32Array(PATCH_SIZE * 3);
@@ -175,13 +165,13 @@ function buildPatchTS(
   cx:     number,
   cy:     number
 ): void {
-  const r = PATCH_RADIUS;
-
   tsPatchData = new Float32Array(PATCH_SIZE);
   tsIxData    = new Float32Array(PATCH_SIZE);
   tsIyData    = new Float32Array(PATCH_SIZE);
 
-  let i = 0;
+  const r = PATCH_RADIUS;
+  let i   = 0;
+
   for (let dy = -r; dy <= r; dy++) {
     for (let dx = -r; dx <= r; dx++) {
       const px = cx + dx;
@@ -208,9 +198,9 @@ function trackPointTS(
     return { x: startX, y: startY, confidence: 0 };
   }
 
-  let gx = startX;
-  let gy = startY;
-  const r = PATCH_RADIUS;
+  let gx     = startX;
+  let gy     = startY;
+  const r    = PATCH_RADIUS;
 
   for (let iter = 0; iter < MAX_ITERATIONS; iter++) {
     let b1 = 0, b2 = 0, A11 = 0, A12 = 0, A22 = 0;
@@ -281,7 +271,7 @@ function trackPointTS(
   return { x: gx, y: gy, confidence };
 }
 
-// ─── Unified build patch + track ─────────────────────────────────────────────
+// ─── Unified build patch + track ──────────────────────────────────────────────
 
 function buildPatch(
   data:   Uint8ClampedArray,
@@ -305,18 +295,13 @@ function trackPoint(
   cy:     number
 ): { x: number; y: number; confidence: number } {
   if (wasmModule && patchData && outData) {
-    wasmModule.track_point(
-      data, width, height,
-      cx, cy,
-      patchData, outData
-    );
+    wasmModule.track_point(data, width, height, cx, cy, patchData, outData);
     return {
       x:          outData[0],
       y:          outData[1],
       confidence: outData[2],
     };
   }
-
   return trackPointTS(data, width, height, cx, cy);
 }
 
@@ -329,12 +314,8 @@ function resolvePixels(msg: TrackMessage): Uint8ClampedArray | null {
 }
 
 function resolveSize(msg: TrackMessage): { w: number; h: number } {
-  if (frameWidth && frameHeight) {
-    return { w: frameWidth, h: frameHeight };
-  }
-  if (msg.imageData) {
-    return { w: msg.imageData.width, h: msg.imageData.height };
-  }
+  if (frameWidth && frameHeight) return { w: frameWidth, h: frameHeight };
+  if (msg.imageData) return { w: msg.imageData.width, h: msg.imageData.height };
   return { w: 0, h: 0 };
 }
 
@@ -350,6 +331,19 @@ self.onmessage = (event: MessageEvent<IncomingMessage>) => {
       frameWidth   = msg.width;
       frameHeight  = msg.height;
 
+      /**
+       * Reduce max iterations on mobile.
+       * Most frames converge in 3–5 iterations anyway via EPSILON early-exit.
+       * The rare frames that need more iterations are fast-movement frames
+       * where extra iterations don't reliably help tracking anyway.
+       */
+      MAX_ITERATIONS = msg.isMobile ? 12 : 20;
+
+      console.log(
+        `Worker init — ${msg.width}×${msg.height} — ` +
+        `mobile: ${msg.isMobile} — maxIter: ${MAX_ITERATIONS}`
+      );
+
       const ack: AckMessage = { type: "ack" };
       self.postMessage(ack);
       break;
@@ -358,38 +352,29 @@ self.onmessage = (event: MessageEvent<IncomingMessage>) => {
     case "seed": {
       if (!sharedPixels || !frameWidth || !frameHeight) {
         console.warn("Seed called before init");
-        const ack: AckMessage = { type: "ack" };
-        self.postMessage(ack);
+        self.postMessage({ type: "ack" } as AckMessage);
         break;
       }
 
       currentPoint = { x: msg.x, y: msg.y };
-
       buildPatch(sharedPixels, frameWidth, frameHeight, msg.x, msg.y);
 
-      const ack: AckMessage = { type: "ack" };
-      self.postMessage(ack);
+      self.postMessage({ type: "ack" } as AckMessage);
       break;
     }
 
     case "track": {
-      const pixels = resolvePixels(msg);
-      const { w, h } = resolveSize(msg);
+      const pixels      = resolvePixels(msg);
+      const { w, h }    = resolveSize(msg);
 
       if (!pixels || !currentPoint || !w || !h) {
-        const result: TrackResult = {
-          type:       "result",
-          x:          0,
-          y:          0,
-          confidence: 0,
-          tracked:    false,
-        };
-        self.postMessage(result);
+        self.postMessage({
+          type: "result", x: 0, y: 0, confidence: 0, tracked: false,
+        } as TrackResult);
         break;
       }
 
       const { x, y, confidence } = trackPoint(pixels, w, h, currentPoint.x, currentPoint.y);
-
       const tracked = confidence >= MIN_CONFIDENCE;
 
       if (tracked) {
@@ -397,15 +382,13 @@ self.onmessage = (event: MessageEvent<IncomingMessage>) => {
         currentPoint = { x, y };
       }
 
-      const result: TrackResult = {
+      self.postMessage({
         type:       "result",
         x:          tracked ? x : currentPoint.x,
         y:          tracked ? y : currentPoint.y,
         confidence,
         tracked,
-      };
-
-      self.postMessage(result);
+      } as TrackResult);
       break;
     }
 
@@ -425,6 +408,5 @@ self.onmessage = (event: MessageEvent<IncomingMessage>) => {
 
 loadWasm().then((success) => {
   console.log(`Worker startup complete — WASM: ${success ? "yes" : "no (TS fallback)"}`);
-  const ack: AckMessage = { type: "ack" };
-  self.postMessage(ack);
+  self.postMessage({ type: "ack" } as AckMessage);
 });
