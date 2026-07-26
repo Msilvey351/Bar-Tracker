@@ -3,16 +3,21 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AnalysisResult, FrameResult, Point } from "@/types";
 import { seekVideo, waitUntilReady } from "@/lib/seekVideo";
+import {
+  isWebCodecsSupported,
+  probeVideo,
+  decodeVideoFrames,
+} from "@/lib/webcodecs";
 
 interface UseVideoAnalyserReturn {
-  analyse:        (file: File, seed: Point) => Promise<void>;
-  progress:       number;
-  isAnalysing:    boolean;
-  result:         AnalysisResult | null;
-  error:          string | null;
-  liveFrames:     FrameResult[];
-  liveFps:        number;
-  liveVideoDims:  { width: number; height: number } | null;
+  analyse:       (file: File, seed: Point) => Promise<void>;
+  progress:      number;
+  isAnalysing:   boolean;
+  result:        AnalysisResult | null;
+  error:         string | null;
+  liveFrames:    FrameResult[];
+  liveFps:       number;
+  liveVideoDims: { width: number; height: number } | null;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -28,11 +33,6 @@ const isMobile = typeof navigator !== "undefined" &&
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function chooseAnalysisFps(durationSeconds: number): number {
-  /**
-   * Same FPS on mobile and desktop.
-   * Lower FPS would reduce velocity accuracy and tracking reliability
-   * on fast movements, so we keep them the same.
-   */
   if (durationSeconds <= 25) return 60;
   if (durationSeconds <= 60) return 30;
   return 24;
@@ -96,6 +96,7 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
   const sharedBufRef   = useRef<SharedArrayBuffer | null>(null);
   const sharedPixelRef = useRef<Uint8ClampedArray | null>(null);
   const canUseSAB      = useRef(false);
+  const abortRef       = useRef<AbortController | null>(null);
 
   // ── Spin up worker ───────────────────────────────────────────────────────
   useEffect(() => {
@@ -108,7 +109,6 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
 
     workerRef.current = worker;
 
-    // Forward worker console to main DevTools
     worker.addEventListener("message", (e) => {
       if (e.data?.type === "log") {
         if (e.data.level === "warn") {
@@ -147,7 +147,6 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
         };
 
         worker.addEventListener("message", handler);
-
         worker.postMessage({
           type:         "init",
           sharedBuffer: sharedBuf,
@@ -161,7 +160,15 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
     []
   );
 
-  // ── Frame capture ────────────────────────────────────────────────────────
+  // ── Frame capture from canvas ────────────────────────────────────────────
+  const captureFromCanvas = useCallback((): ImageData | null => {
+    const canvas = canvasRef.current;
+    if (!canvas) return null;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return null;
+    return ctx.getImageData(0, 0, canvas.width, canvas.height);
+  }, []);
+
   const captureFrame = useCallback((): ImageData | null => {
     const video  = videoRef.current;
     const canvas = canvasRef.current;
@@ -192,9 +199,9 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
   // ── Worker communication ─────────────────────────────────────────────────
   const workerSend = useCallback(
     (
-      message: Record<string, unknown>,
+      message:     Record<string, unknown>,
       waitForType: string,
-      transfer?: Transferable[]
+      transfer?:   Transferable[]
     ): Promise<Record<string, unknown>> => {
       return new Promise((resolve) => {
         const worker = workerRef.current;
@@ -247,35 +254,166 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
     [workerSend, writeFrameToShared]
   );
 
-  // ── Main analysis ────────────────────────────────────────────────────────
-  const analyse = useCallback(
-    async (file: File, seed: Point) => {
-      setIsAnalysing(true);
-      setProgress(0);
-      setResult(null);
-      setError(null);
-      setLiveFrames([]);
-      setLiveVideoDims(null);
+  // ── Process one frame (shared between both code paths) ───────────────────
+  const processFrame = useCallback(
+    async (
+      imageData:     ImageData,
+      timeSeconds:   number,
+      frameIndex:    number,
+      scale:         number,
+      currentPoint:  { x: number; y: number },
+      previousPoint: { x: number; y: number } | null,
+    ): Promise<{
+      newPoint:      { x: number; y: number };
+      newPrevious:   { x: number; y: number };
+      frameResult:   FrameResult;
+    }> => {
+      const tracked   = await workerTrack(imageData);
+      const candidate = { x: tracked.x, y: tracked.y };
 
-      const video = document.createElement("video");
-      video.muted       = true;
-      video.playsInline = true;
-      video.preload     = "auto";
-      video.style.cssText =
-        "position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;";
+      const recentStep = previousPoint
+        ? distance(currentPoint, previousPoint)
+        : 0;
 
-      document.body.appendChild(video);
+      const maxJump = Math.max(
+        MIN_MAX_JUMP_PX,
+        recentStep * 3.5,
+        imageData.height * MAX_JUMP_HEIGHT_FRACTION
+      );
 
-      const canvas      = document.createElement("canvas");
-      videoRef.current  = video;
-      canvasRef.current = canvas;
+      const jump = distance(candidate, currentPoint);
 
-      let url: string | null = null;
+      const accepted =
+        tracked.confidence >= 0.28 || jump <= maxJump;
+
+      const newPoint = accepted ? candidate : currentPoint;
+
+      return {
+        newPoint,
+        newPrevious:  currentPoint,
+        frameResult: {
+          frameIndex,
+          timeSeconds,
+          position: {
+            x: newPoint.x / scale,
+            y: newPoint.y / scale,
+          },
+        },
+      };
+    },
+    [workerTrack]
+  );
+
+  // ── WebCodecs analysis path ──────────────────────────────────────────────
+  const analyseWithWebCodecs = useCallback(
+    async (
+      file:   File,
+      seed:   Point,
+      canvas: HTMLCanvasElement
+    ): Promise<AnalysisResult> => {
+      console.log("Using WebCodecs path");
+
+      const info  = await probeVideo(file);
+      const fps   = chooseAnalysisFps(info.durationSeconds);
+      const scale = SCALED_WIDTH / info.width;
+      const scaledH = Math.round(info.height * scale);
+
+      canvas.width  = SCALED_WIDTH;
+      canvas.height = scaledH;
+
+      const ctx = canvas.getContext("2d", { willReadFrequently: true });
+      if (!ctx) throw new Error("Could not get canvas context");
+
+      await initSharedBuffer(SCALED_WIDTH, scaledH);
+
+      let currentPoint:  { x: number; y: number } = {
+        x: seed.x * scale,
+        y: seed.y * scale,
+      };
+      let previousPoint: { x: number; y: number } | null = null;
+
+      const allFrames: FrameResult[] = [];
+      let   seeded = false;
+
+      await decodeVideoFrames(
+        file,
+        fps,
+        info,
+        async (frame, frameIndex) => {
+          if (abortRef.current?.signal.aborted) {
+            frame.close();
+            return;
+          }
+
+          // Draw decoded frame to canvas at tracking resolution
+          frame.draw(ctx, SCALED_WIDTH, scaledH);
+          frame.close();
+
+          const imageData = ctx.getImageData(0, 0, SCALED_WIDTH, scaledH);
+
+          // Seed tracker on first frame
+          if (!seeded) {
+            writeFrameToShared(imageData);
+            await workerSeed(currentPoint.x, currentPoint.y);
+            seeded = true;
+
+            allFrames.push({
+              frameIndex:  0,
+              timeSeconds: 0,
+              position:    { x: seed.x, y: seed.y },
+            });
+            return;
+          }
+
+          const timeSeconds = frame.timestampUs / 1_000_000;
+
+          const { newPoint, newPrevious, frameResult } = await processFrame(
+            imageData,
+            timeSeconds,
+            frameIndex,
+            scale,
+            currentPoint,
+            previousPoint
+          );
+
+          currentPoint  = newPoint;
+          previousPoint = newPrevious;
+          allFrames.push(frameResult);
+        },
+        (pct) => setProgress(pct),
+        abortRef.current?.signal
+      );
+
+      return {
+        frames:          smoothPositions(allFrames),
+        fps,
+        videoWidth:      info.width,
+        videoHeight:     info.height,
+        durationSeconds: info.durationSeconds,
+      };
+    },
+    [
+      initSharedBuffer,
+      writeFrameToShared,
+      workerSeed,
+      processFrame,
+    ]
+  );
+
+  // ── Seek-based fallback path ─────────────────────────────────────────────
+  const analyseWithSeek = useCallback(
+    async (
+      file:   File,
+      seed:   Point,
+      video:  HTMLVideoElement,
+      canvas: HTMLCanvasElement
+    ): Promise<AnalysisResult> => {
+      console.log("Using seek-based fallback path");
+
+      const url = URL.createObjectURL(file);
+      video.src = url;
 
       try {
-        url       = URL.createObjectURL(file);
-        video.src = url;
-
         await new Promise<void>((resolve, reject) => {
           video.addEventListener("loadedmetadata", () => resolve(), { once: true });
           video.addEventListener("error", () => reject(new Error("Video load error")), { once: true });
@@ -290,18 +428,28 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
         const scale       = SCALED_WIDTH / videoWidth;
         const scaledH     = Math.round(videoHeight * scale);
 
-        setLiveFps(fps);
-        setLiveVideoDims({ width: videoWidth, height: videoHeight });
+        canvas.width  = SCALED_WIDTH;
+        canvas.height = scaledH;
 
-        let currentPoint:  Point       = { x: seed.x * scale, y: seed.y * scale };
-        let previousPoint: Point | null = null;
+        let currentPoint:  { x: number; y: number } = {
+          x: seed.x * scale,
+          y: seed.y * scale,
+        };
+        let previousPoint: { x: number; y: number } | null = null;
 
         await waitUntilReady(video);
         video.pause();
         await seekVideo(video, 0);
         await new Promise((r) => setTimeout(r, 100));
 
-        const firstFrame = captureFrame();
+        const captureCurrentFrame = (): ImageData | null => {
+          const ctx = canvas.getContext("2d", { willReadFrequently: true });
+          if (!ctx) return null;
+          ctx.drawImage(video, 0, 0, SCALED_WIDTH, scaledH);
+          return ctx.getImageData(0, 0, SCALED_WIDTH, scaledH);
+        };
+
+        const firstFrame = captureCurrentFrame();
         if (!firstFrame) throw new Error("Could not capture first frame");
 
         await initSharedBuffer(SCALED_WIDTH, scaledH);
@@ -309,78 +457,106 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
         await workerSeed(currentPoint.x, currentPoint.y);
 
         const allFrames: FrameResult[] = [
-          {
-            frameIndex:  0,
-            timeSeconds: 0,
-            position:    { x: seed.x, y: seed.y },
-          },
+          { frameIndex: 0, timeSeconds: 0, position: { x: seed.x, y: seed.y } },
         ];
 
         for (let fi = 1; fi < totalFrames; fi++) {
+          if (abortRef.current?.signal.aborted) break;
+
           const t = fi / fps;
           if (t > duration) break;
 
           await seekVideo(video, t);
 
-          const nextFrame = captureFrame();
+          const nextFrame = captureCurrentFrame();
           if (!nextFrame) continue;
 
-          const tracked = await workerTrack(nextFrame);
-          const candidate: Point = { x: tracked.x, y: tracked.y };
-
-          const recentStep = previousPoint
-            ? distance(currentPoint, previousPoint)
-            : 0;
-
-          const maxJump = Math.max(
-            MIN_MAX_JUMP_PX,
-            recentStep * 3.5,
-            nextFrame.height * MAX_JUMP_HEIGHT_FRACTION
+          const { newPoint, newPrevious, frameResult } = await processFrame(
+            nextFrame,
+            t,
+            fi,
+            scale,
+            currentPoint,
+            previousPoint
           );
 
-          const jump = distance(candidate, currentPoint);
+          currentPoint  = newPoint;
+          previousPoint = newPrevious;
+          allFrames.push(frameResult);
 
-          if (tracked.confidence >= 0.28 || jump <= maxJump) {
-            previousPoint = currentPoint;
-            currentPoint  = candidate;
-          }
-
-          allFrames.push({
-            frameIndex:  fi,
-            timeSeconds: t,
-            position: {
-              x: currentPoint.x / scale,
-              y: currentPoint.y / scale,
-            },
-          });
-
-          // Progress update every other frame
-          if (fi % 2 === 0) {
+          if (fi % 15 === 0) {
             setProgress(Math.round((fi / totalFrames) * 100));
           }
         }
 
-        // Smooth and emit final result
-        const smoothed = smoothPositions(allFrames);
-
-        /**
-         * Emit live frames only once at the end.
-         * No per-frame updates during analysis — keeps all CPU
-         * available for seeking and tracking.
-         */
-        setLiveFrames(smoothed);
-
-        setResult({
-          frames:          smoothed,
+        return {
+          frames:          smoothPositions(allFrames),
           fps,
           videoWidth,
           videoHeight,
           durationSeconds: duration,
-        });
+        };
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    },
+    [initSharedBuffer, writeFrameToShared, workerSeed, processFrame]
+  );
+
+  // ── Main analyse entry point ─────────────────────────────────────────────
+  const analyse = useCallback(
+    async (file: File, seed: Point) => {
+      setIsAnalysing(true);
+      setProgress(0);
+      setResult(null);
+      setError(null);
+      setLiveFrames([]);
+      setLiveVideoDims(null);
+
+      abortRef.current = new AbortController();
+
+      const video  = document.createElement("video");
+      video.muted       = true;
+      video.playsInline = true;
+      video.preload     = "auto";
+      video.style.cssText =
+        "position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;";
+
+      document.body.appendChild(video);
+
+      const canvas      = document.createElement("canvas");
+      videoRef.current  = video;
+      canvasRef.current = canvas;
+
+      try {
+        // Probe metadata (cheap — uses video element)
+        const info = await probeVideo(file);
+
+        setLiveFps(chooseAnalysisFps(info.durationSeconds));
+        setLiveVideoDims({ width: info.width, height: info.height });
+
+        let analysisResult: AnalysisResult;
+
+        /**
+         * Try WebCodecs first — no seek overhead, much faster on mobile.
+         * Fall back to seek-based if WebCodecs is not supported or fails.
+         */
+        if (isWebCodecsSupported()) {
+          try {
+            analysisResult = await analyseWithWebCodecs(file, seed, canvas);
+          } catch (e) {
+            console.warn("WebCodecs failed, falling back to seek:", String(e));
+            analysisResult = await analyseWithSeek(file, seed, video, canvas);
+          }
+        } else {
+          analysisResult = await analyseWithSeek(file, seed, video, canvas);
+        }
+
+        setLiveFrames(analysisResult.frames);
+        setResult(analysisResult);
       } catch (e) {
         setError(e instanceof Error ? e.message : "Unknown error");
       } finally {
-        if (url) URL.revokeObjectURL(url);
         if (document.body.contains(video)) document.body.removeChild(video);
 
         workerRef.current?.postMessage({ type: "reset" });
@@ -389,12 +565,13 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
         canvasRef.current      = null;
         sharedBufRef.current   = null;
         sharedPixelRef.current = null;
+        abortRef.current       = null;
 
         setIsAnalysing(false);
         setProgress(100);
       }
     },
-    [captureFrame, initSharedBuffer, writeFrameToShared, workerSeed, workerTrack]
+    [analyseWithWebCodecs, analyseWithSeek]
   );
 
   return {
