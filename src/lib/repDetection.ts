@@ -129,7 +129,7 @@ export function buildVelocityFrames(
      * This correctly handles WebCodecs frames which may not be
      * evenly spaced, and seek-based frames which are.
      */
-    const dt = frames[i].timeSeconds - frames[i - 1].timeSeconds;
+    const dt = 1/fps
 
     if (dt <= 0) {
       // Duplicate or out-of-order frame — use previous values

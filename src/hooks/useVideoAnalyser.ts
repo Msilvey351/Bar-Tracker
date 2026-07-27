@@ -365,7 +365,15 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
             return;
           }
 
-          const timeSeconds = frame.timestampUs / 1_000_000;
+          /**
+           * Use sequential frame time based on frameIndex and fps,
+           * not the raw WebCodecs timestamp.
+           *
+           * WebCodecs timestamps are correct for the video but frames
+           * are sampled at targetFps intervals. Using frameIndex/fps
+           * gives consistent dt between frames matching the seek path.
+           */
+          const timeSeconds = frameIndex / fps;
 
           const { newPoint, newPrevious, frameResult } = await processFrame(
             imageData,
