@@ -5,6 +5,7 @@ import type {
   RepStats,
   CalibrationPoints,
 } from "@/types";
+import { isReactCompilerRequired } from "next/dist/build/swc";
 
 // ─── Public options ───────────────────────────────────────────────────────────
 
@@ -478,6 +479,9 @@ export function detectPhasesAndReps(
   if (!candidates.length) return result;
 
   candidates.forEach((candidate, repIdx) => {
+    let lastDir: -1 | 1 = 1;
+
+
     for (let i = candidate.start; i <= candidate.end; i++) {
       const f   = result[i];
       const dir = signOf(f.velocityY);
@@ -497,9 +501,10 @@ export function detectPhasesAndReps(
        * This allows the lines to smoothly approach and cross zero.
        */
       if (dir === 0) {
-        f.phase    = "rest";
-        f.repIndex = null;
+        f.repIndex = repIdx;
+        f.phase    = lastDir === 1 ? "eccentric" : "concentric";
       } else {
+        lastDir = dir;
         f.repIndex = repIdx;
         f.phase    = dir === 1 ? "eccentric" : "concentric";
       }
@@ -507,6 +512,8 @@ export function detectPhasesAndReps(
   });
 
   cleanTinyPhaseRuns(result);
+
+  
   return result;
 }
 
