@@ -117,7 +117,6 @@ export function buildVelocityFrames(
 ): VelocityFrame[] {
   if (frames.length < 2) return [];
 
-  const dt       = 1 / fps;
   const rawSpeed = [0];
   const rawVY    = [0];
 
@@ -125,13 +124,21 @@ export function buildVelocityFrames(
     const dx = frames[i].position.x - frames[i - 1].position.x;
     const dy = frames[i].position.y - frames[i - 1].position.y;
 
-    rawSpeed.push(Math.sqrt(dx * dx + dy * dy) / dt);
-
     /**
-     * Browser/video coordinates: y increases downward.
-     * velocityY > 0 = bar moving DOWN = eccentric
-     * velocityY < 0 = bar moving UP   = concentric
+     * Use actual timestamp difference instead of assumed 1/fps.
+     * This correctly handles WebCodecs frames which may not be
+     * evenly spaced, and seek-based frames which are.
      */
+    const dt = frames[i].timeSeconds - frames[i - 1].timeSeconds;
+
+    if (dt <= 0) {
+      // Duplicate or out-of-order frame — use previous values
+      rawSpeed.push(rawSpeed[rawSpeed.length - 1]);
+      rawVY.push(rawVY[rawVY.length - 1]);
+      continue;
+    }
+
+    rawSpeed.push(Math.sqrt(dx * dx + dy * dy) / dt);
     rawVY.push(dy / dt);
   }
 
