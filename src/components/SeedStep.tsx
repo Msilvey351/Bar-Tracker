@@ -12,19 +12,19 @@ type ClickStep = "bar" | "plateTop" | "plateBottom" | "done";
 
 const STEP_CONFIG: Record<ClickStep, { label: string; colour: string; hint: string }> = {
   bar: {
-    label:  "Step 1 of 3 — Click the centre of the barbell",
+    label:  "Step 1 of 3 — Tap the centre of the barbell",
     colour: "#f97316",
-    hint:   "Click exactly on the middle of the bar (the steel shaft, not the plate)",
+    hint:   "Tap exactly on the middle of the bar (the steel shaft, not the plate)",
   },
   plateTop: {
-    label:  "Step 2 of 3 — Click the very top edge of the plate",
+    label:  "Step 2 of 3 — Tap the very top edge of the plate",
     colour: "#3b82f6",
-    hint:   "Click the highest point of the weight plate visible in the frame",
+    hint:   "Tap the highest point of the weight plate visible in the frame",
   },
   plateBottom: {
-    label:  "Step 3 of 3 — Click the very bottom edge of the plate",
+    label:  "Step 3 of 3 — Tap the very bottom edge of the plate",
     colour: "#3b82f6",
-    hint:   "Click the lowest point of the same weight plate",
+    hint:   "Tap the lowest point of the same weight plate",
   },
   done: {
     label:  "All points set — ready to analyse",
@@ -48,12 +48,14 @@ export default function SeedStep({ file, onSeedSet }: Props) {
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
-    const url = URL.createObjectURL(file);
+
+    const url     = URL.createObjectURL(file);
     video.src     = url;
     video.muted   = true;
     video.preload = "auto";
+    video.playsInline = true;
 
-    const onMeta = () => { video.currentTime = 0; };
+    const onMeta   = () => { video.currentTime = 0; };
     const onSeeked = () => {
       const canvas = canvasRef.current;
       if (!canvas) return;
@@ -66,20 +68,21 @@ export default function SeedStep({ file, onSeedSet }: Props) {
     };
 
     video.addEventListener("loadedmetadata", onMeta);
-    video.addEventListener("seeked", onSeeked);
+    video.addEventListener("seeked",         onSeeked);
     video.load();
+
     return () => {
       URL.revokeObjectURL(url);
       video.removeEventListener("loadedmetadata", onMeta);
-      video.removeEventListener("seeked", onSeeked);
+      video.removeEventListener("seeked",         onSeeked);
     };
   }, [file]);
 
-  // ── Redraw canvas whenever points change ──────────────────────────────────
+  // ── Redraw canvas ─────────────────────────────────────────────────────────
   const redraw = (
-    bar:  Point | null,
-    top:  Point | null,
-    bot:  Point | null
+    bar: Point | null,
+    top: Point | null,
+    bot: Point | null
   ) => {
     const canvas = canvasRef.current;
     const video  = videoRef.current;
@@ -87,10 +90,8 @@ export default function SeedStep({ file, onSeedSet }: Props) {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    // Redraw base frame
     ctx.drawImage(video, 0, 0);
 
-    // Draw plate calibration line
     if (top && bot) {
       ctx.strokeStyle = "#3b82f6";
       ctx.lineWidth   = 2;
@@ -101,21 +102,15 @@ export default function SeedStep({ file, onSeedSet }: Props) {
       ctx.stroke();
       ctx.setLineDash([]);
 
-      // Distance label
       const midX = (top.x + bot.x) / 2 + 12;
       const midY = (top.y + bot.y) / 2;
-      ctx.fillStyle    = "#3b82f6";
-      ctx.font         = "bold 14px monospace";
+      ctx.fillStyle = "#3b82f6";
+      ctx.font      = "bold 14px monospace";
       ctx.fillText(`${diameter} cm`, midX, midY);
     }
 
-    // Draw plate top point
     if (top) drawCrosshair(ctx, top, "#3b82f6", "TOP");
-
-    // Draw plate bottom point
     if (bot) drawCrosshair(ctx, bot, "#3b82f6", "BOT");
-
-    // Draw bar point (on top so it's always visible)
     if (bar) drawCrosshair(ctx, bar, "#f97316", "BAR");
   };
 
@@ -125,66 +120,98 @@ export default function SeedStep({ file, onSeedSet }: Props) {
     colour: string,
     label:  string
   ) {
-    // Circle
     ctx.beginPath();
     ctx.arc(pt.x, pt.y, 12, 0, Math.PI * 2);
     ctx.strokeStyle = colour;
     ctx.lineWidth   = 3;
     ctx.stroke();
 
-    // Centre dot
     ctx.beginPath();
     ctx.arc(pt.x, pt.y, 3, 0, Math.PI * 2);
     ctx.fillStyle = "#fff";
     ctx.fill();
 
-    // Crosshair lines
     ctx.strokeStyle = colour;
     ctx.lineWidth   = 1.5;
     ctx.beginPath(); ctx.moveTo(pt.x - 20, pt.y); ctx.lineTo(pt.x + 20, pt.y); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(pt.x, pt.y - 20); ctx.lineTo(pt.x, pt.y + 20); ctx.stroke();
 
-    // Label
     ctx.fillStyle = colour;
     ctx.font      = "bold 12px monospace";
     ctx.fillText(label, pt.x + 16, pt.y - 8);
   }
 
-  // ── Handle canvas click ───────────────────────────────────────────────────
-  const handleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  // ── Shared interaction handler (mouse + touch) ────────────────────────────
+  const handleInteraction = (clientX: number, clientY: number) => {
     if (step === "done") return;
+
     const canvas = canvasRef.current;
     if (!canvas) return;
+
     const rect   = canvas.getBoundingClientRect();
+
+    /**
+     * Scale from CSS display pixels to video pixel coordinates.
+     * This correctly handles:
+     * - Mobile high-DPI screens
+     * - Canvas displayed smaller than its internal resolution
+     * - Both mouse and touch coordinates (already in CSS pixels)
+     */
     const scaleX = videoDims.w / rect.width;
     const scaleY = videoDims.h / rect.height;
+
     const pt: Point = {
-      x: (e.clientX - rect.left) * scaleX,
-      y: (e.clientY - rect.top)  * scaleY,
+      x: (clientX - rect.left) * scaleX,
+      y: (clientY - rect.top)  * scaleY,
+    };
+
+    // Clamp to video bounds
+    const clamped: Point = {
+      x: Math.max(0, Math.min(videoDims.w, pt.x)),
+      y: Math.max(0, Math.min(videoDims.h, pt.y)),
     };
 
     if (step === "bar") {
-      setBarPoint(pt);
+      setBarPoint(clamped);
       setStep("plateTop");
-      redraw(pt, plateTop, plateBot);
+      redraw(clamped, plateTop, plateBot);
     } else if (step === "plateTop") {
-      setPlateTop(pt);
+      setPlateTop(clamped);
       setStep("plateBottom");
-      redraw(barPoint, pt, plateBot);
+      redraw(barPoint, clamped, plateBot);
     } else if (step === "plateBottom") {
-      setPlateBot(pt);
+      setPlateBot(clamped);
       setStep("done");
-      redraw(barPoint, plateTop, pt);
+      redraw(barPoint, plateTop, clamped);
     }
   };
 
-  // ── Redraw when any point updates ─────────────────────────────────────────
+  // ── Mouse click handler ───────────────────────────────────────────────────
+  const handleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    handleInteraction(e.clientX, e.clientY);
+  };
+
+  // ── Touch handler ─────────────────────────────────────────────────────────
+  const handleTouch = (e: React.TouchEvent<HTMLCanvasElement>) => {
+    /**
+     * Prevent the ghost mouse click that fires ~300ms after touch on mobile.
+     * Without this, each tap registers twice.
+     */
+    e.preventDefault();
+
+    const touch = e.changedTouches[0];
+    if (!touch) return;
+
+    handleInteraction(touch.clientX, touch.clientY);
+  };
+
+  // ── Redraw when points update ─────────────────────────────────────────────
   useEffect(() => {
     if (ready) redraw(barPoint, plateTop, plateBot);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [barPoint, plateTop, plateBot, ready, diameter]);
 
-  // ── Reset a specific point ────────────────────────────────────────────────
+  // ── Reset ─────────────────────────────────────────────────────────────────
   const reset = () => {
     setBarPoint(null);
     setPlateTop(null);
@@ -192,12 +219,14 @@ export default function SeedStep({ file, onSeedSet }: Props) {
     setStep("bar");
   };
 
-  // ── Calculate calibration and submit ─────────────────────────────────────
+  // ── Confirm ───────────────────────────────────────────────────────────────
   const handleConfirm = () => {
     if (!barPoint || !plateTop || !plateBot) return;
+
     const pixelDiameter = Math.abs(plateBot.y - plateTop.y);
     const pxPerCm       = pixelDiameter / diameter;
     const pxPerM        = pxPerCm * 100;
+
     const calibration: CalibrationPoints = {
       top:        plateTop,
       bottom:     plateBot,
@@ -205,6 +234,7 @@ export default function SeedStep({ file, onSeedSet }: Props) {
       pxPerCm,
       pxPerM,
     };
+
     onSeedSet(barPoint, calibration);
   };
 
@@ -220,22 +250,26 @@ export default function SeedStep({ file, onSeedSet }: Props) {
       <div className="text-center">
         <h2 className="text-2xl font-bold">Set Tracking Points</h2>
         <p className="text-white/40 text-sm mt-1">
-          3 clicks to calibrate and track — bar point + plate top + plate bottom
+          3 taps to calibrate and track — bar point + plate top + plate bottom
         </p>
       </div>
 
       {/* Step indicator */}
       <div className="flex items-center gap-3">
         {(["bar", "plateTop", "plateBottom"] as ClickStep[]).map((s, i) => {
-          const isDone    = ["bar","plateTop","plateBottom","done"].indexOf(step) > i;
+          const isDone    = ["bar", "plateTop", "plateBottom", "done"].indexOf(step) > i;
           const isCurrent = step === s;
           return (
             <div key={s} className="flex items-center gap-3">
               <div className={`
-                w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold border-2 transition-all
-                ${isCurrent ? "border-orange-500 bg-orange-500 text-white"
-                  : isDone  ? "border-emerald-500 bg-emerald-500/20 text-emerald-400"
-                  :           "border-white/20 text-white/30"}
+                w-8 h-8 rounded-full flex items-center justify-center
+                text-xs font-bold border-2 transition-all
+                ${isCurrent
+                  ? "border-orange-500 bg-orange-500 text-white"
+                  : isDone
+                  ? "border-emerald-500 bg-emerald-500/20 text-emerald-400"
+                  : "border-white/20 text-white/30"
+                }
               `}>
                 {isDone ? "✓" : i + 1}
               </div>
@@ -262,19 +296,35 @@ export default function SeedStep({ file, onSeedSet }: Props) {
 
       {/* Canvas */}
       <div className="relative w-full max-w-3xl rounded-xl overflow-hidden border border-white/10 bg-black">
-        <video ref={videoRef} className="hidden" playsInline />
+        <video
+          ref={videoRef}
+          className="hidden"
+          playsInline
+          muted
+        />
+
         {!ready && (
           <div className="h-64 flex items-center justify-center text-white/40 text-sm">
             Loading first frame…
           </div>
         )}
+
         <canvas
           ref={canvasRef}
           onClick={handleClick}
-          className={`w-full ${ready ? "block" : "hidden"} ${step !== "done" ? "cursor-crosshair" : "cursor-default"}`}
+          onTouchEnd={handleTouch}
+          className={`
+            w-full
+            ${ready  ? "block"  : "hidden"}
+            ${step !== "done" ? "cursor-crosshair" : "cursor-default"}
+          `}
+          /**
+           * touch-action: none prevents the browser from handling
+           * scroll/zoom on the canvas, which would interfere with taps.
+           */
+          style={{ touchAction: "none" }}
         />
 
-        {/* Point badges overlay */}
         {barPoint && (
           <div className="absolute top-2 left-2 bg-orange-500/90 text-white text-xs font-mono px-2 py-1 rounded-md">
             BAR ({Math.round(barPoint.x)}, {Math.round(barPoint.y)})
@@ -282,7 +332,7 @@ export default function SeedStep({ file, onSeedSet }: Props) {
         )}
       </div>
 
-      {/* Diameter input + calibration info */}
+      {/* Diameter input */}
       <div className="w-full max-w-3xl flex flex-wrap gap-4 items-center justify-between bg-white/5 border border-white/10 rounded-xl px-5 py-4">
         <div className="flex items-center gap-3">
           <label className="text-white/50 text-sm whitespace-nowrap">
@@ -323,7 +373,7 @@ export default function SeedStep({ file, onSeedSet }: Props) {
       {step === "done" && barPoint && plateTop && plateBot && (
         <button
           onClick={handleConfirm}
-          className="px-8 py-3 bg-orange-500 hover:bg-orange-600 text-white font-bold rounded-xl transition-colors text-lg shadow-lg shadow-orange-500/20"
+          className="px-8 py-3 bg-orange-500 hover:bg-orange-600 active:bg-orange-700 text-white font-bold rounded-xl transition-colors text-lg shadow-lg shadow-orange-500/20"
         >
           Start Analysis →
         </button>
@@ -331,9 +381,9 @@ export default function SeedStep({ file, onSeedSet }: Props) {
 
       {step !== "done" && (
         <p className="text-white/25 text-sm italic">
-          {step === "bar"         && "👆 Click on the barbell shaft"}
-          {step === "plateTop"    && "👆 Click the top edge of the plate"}
-          {step === "plateBottom" && "👆 Click the bottom edge of the plate"}
+          {step === "bar"         && "👆 Tap on the barbell shaft"}
+          {step === "plateTop"    && "👆 Tap the top edge of the plate"}
+          {step === "plateBottom" && "👆 Tap the bottom edge of the plate"}
         </p>
       )}
 
