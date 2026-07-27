@@ -16,7 +16,12 @@ export interface AnalyseRepOptions {
 
 const SPEED_SMOOTH_WINDOW        = 25;
 const VY_SMOOTH_WINDOW           = 31;
-const MOVING_FRACTION            = 0.07;
+
+/**
+ * Lowered from 0.07 → 0.04 so more frames near the zero crossing
+ * get a direction assigned, allowing velocity lines to reach zero.
+ */
+const MOVING_FRACTION            = 0.04;
 const DIRECTION_FRACTION         = 0.06;
 const MAX_REST_GAP_FRAMES        = 5;
 const MIN_SEGMENT_FRAMES         = 5;
@@ -29,16 +34,7 @@ const MIN_RANGE_VS_MEDIAN        = 0.40;
 const MIN_PEAK_VS_MEDIAN         = 0.35;
 const EDGE_TRIM_FRACTION         = 0.45;
 const MIN_PHASE_RUN_FRAMES       = 4;
-
-/**
- * Velocity below this fraction of rep peak = considered "paused".
- * Intentionally low so we catch genuine pauses without false positives.
- */
 const PAUSE_VELOCITY_FRACTION    = 0.08;
-
-/**
- * A gap shorter than this is normal reversal deceleration, not a pause.
- */
 const MIN_PAUSE_DURATION_S       = 0.20;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -94,10 +90,6 @@ function pxToM(
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface MovementSegment {
-  /**
-   * -1 = bar moving UP   (concentric for most lifts)
-   * +1 = bar moving DOWN (eccentric for most lifts)
-   */
   dir: -1 | 1;
   start: number;
   end: number;
@@ -188,8 +180,8 @@ function buildMovementSegments(vFrames: VelocityFrame[]): MovementSegment[] {
   const directionThreshold = globalVyPeak    * DIRECTION_FRACTION;
 
   const dirByFrame: Array<-1 | 1 | null> = vFrames.map((f) => {
-    if (f.velocitySmoothed < movingThreshold)          return null;
-    if (Math.abs(f.velocityY) < directionThreshold)    return null;
+    if (f.velocitySmoothed < movingThreshold)       return null;
+    if (Math.abs(f.velocityY) < directionThreshold) return null;
     return f.velocityY < 0 ? -1 : 1;
   });
 
@@ -208,7 +200,6 @@ function buildMovementSegments(vFrames: VelocityFrame[]): MovementSegment[] {
     i = j;
   }
 
-  // Merge same-direction segments separated by tiny gaps
   const merged: MovementSegment[] = [];
 
   for (const seg of rawSegments) {
@@ -218,7 +209,9 @@ function buildMovementSegments(vFrames: VelocityFrame[]): MovementSegment[] {
       last.dir === seg.dir &&
       seg.start - last.end - 1 <= MAX_REST_GAP_FRAMES
     ) {
-      merged[merged.length - 1] = makeSegment(vFrames, last.dir, last.start, seg.end);
+      merged[merged.length - 1] = makeSegment(
+        vFrames, last.dir, last.start, seg.end
+      );
     } else {
       merged.push(seg);
     }
@@ -304,7 +297,7 @@ function adaptiveFilterCandidates(
 
   return basic.filter(
     (c) =>
-      c.rangePx  >= medRange * MIN_RANGE_VS_MEDIAN &&
+      c.rangePx   >= medRange * MIN_RANGE_VS_MEDIAN &&
       c.peakSpeed >= medPeak  * MIN_PEAK_VS_MEDIAN
   );
 }
@@ -320,7 +313,7 @@ function scoreCandidates(candidates: RepCandidate[]): number {
   const rDev = medR > 0
     ? median(ranges.map((r) => Math.abs(r - medR))) / medR : 1;
   const pDev = medP > 0
-    ? median(peaks.map((p) => Math.abs(p - medP))) / medP  : 1;
+    ? median(peaks.map((p)  => Math.abs(p - medP))) / medP : 1;
 
   const consistency =
     (1 - Math.min(1, rDev)) * 20 +
@@ -330,8 +323,8 @@ function scoreCandidates(candidates: RepCandidate[]): number {
 }
 
 function chooseBestRepCandidates(
-  segments: MovementSegment[],
-  vFrames: VelocityFrame[],
+  segments:    MovementSegment[],
+  vFrames:     VelocityFrame[],
   calibration?: CalibrationPoints | null
 ): RepCandidate[] {
   const offset0 = adaptiveFilterCandidates(
@@ -370,10 +363,10 @@ function trimEdgeCandidates(candidates: RepCandidate[]): RepCandidate[] {
   for (let pass = 0; pass < 3; pass++) {
     if (trimmed.length <= 2) break;
 
-    const inner          = trimmed.slice(1, -1);
-    const innerMedianP   = median(inner.map((c) => c.peakSpeed));
-    const innerMedianR   = median(inner.map((c) => c.rangePx));
-    let   changed        = false;
+    const inner        = trimmed.slice(1, -1);
+    const innerMedianP = median(inner.map((c) => c.peakSpeed));
+    const innerMedianR = median(inner.map((c) => c.rangePx));
+    let   changed      = false;
 
     if (
       trimmed[0].peakSpeed < innerMedianP * EDGE_TRIM_FRACTION ||
@@ -384,10 +377,10 @@ function trimEdgeCandidates(candidates: RepCandidate[]): RepCandidate[] {
     }
 
     if (trimmed.length > 2) {
-      const newInner  = trimmed.slice(1, -1);
-      const newIMP    = median(newInner.map((c) => c.peakSpeed));
-      const newIMR    = median(newInner.map((c) => c.rangePx));
-      const last      = trimmed[trimmed.length - 1];
+      const newInner = trimmed.slice(1, -1);
+      const newIMP   = median(newInner.map((c) => c.peakSpeed));
+      const newIMR   = median(newInner.map((c) => c.rangePx));
+      const last     = trimmed[trimmed.length - 1];
 
       if (
         last.peakSpeed < newIMP * EDGE_TRIM_FRACTION ||
@@ -482,22 +475,27 @@ export function detectPhasesAndReps(
       const f   = result[i];
       const dir = signOf(f.velocityY);
 
-      if (dir === 0) {
-        f.phase = "rest"; f.repIndex = null; continue;
-      }
-
-      if (f.velocitySmoothed < candidate.peakSpeed * 0.10) {
-        f.phase = "rest"; f.repIndex = null; continue;
-      }
-
-      f.repIndex = repIdx;
-
       /**
-       * Universal phase rule — no lift-type hardcoding:
-       *   dir +1 = bar moving DOWN = eccentric
-       *   dir -1 = bar moving UP   = concentric
+       * KEY FIX: removed the `peakSpeed * 0.10` threshold that was
+       * cutting off frames near zero velocity.
+       *
+       * Previously:
+       *   if (f.velocitySmoothed < candidate.peakSpeed * 0.10) → rest
+       *
+       * This caused the velocity lines to stop before reaching zero,
+       * creating a gap around the zero crossing on the chart.
+       *
+       * Now we label every frame in the rep window by direction only.
+       * If there is no direction (dir === 0), mark as rest.
+       * This allows the lines to smoothly approach and cross zero.
        */
-      f.phase = dir === 1 ? "eccentric" : "concentric";
+      if (dir === 0) {
+        f.phase    = "rest";
+        f.repIndex = null;
+      } else {
+        f.repIndex = repIdx;
+        f.phase    = dir === 1 ? "eccentric" : "concentric";
+      }
     }
   });
 
@@ -554,9 +552,9 @@ export function filterAndRenumber(
 
   metrics = metrics.filter((m) => {
     const basicOk =
-      m.totalFrames  >= MIN_REP_FRAMES &&
-      m.concFrames.length > 0          &&
-      m.eccFrames.length  > 0;
+      m.totalFrames       >= MIN_REP_FRAMES &&
+      m.concFrames.length >  0              &&
+      m.eccFrames.length  >  0;
 
     if (!basicOk) return false;
 
@@ -568,7 +566,11 @@ export function filterAndRenumber(
   });
 
   if (!metrics.length) {
-    return result.map((f) => ({ ...f, phase: "rest" as Phase, repIndex: null }));
+    return result.map((f) => ({
+      ...f,
+      phase:    "rest" as Phase,
+      repIndex: null,
+    }));
   }
 
   const medRange = median(metrics.map((m) => m.rangePx));
@@ -576,17 +578,21 @@ export function filterAndRenumber(
 
   metrics = metrics.filter(
     (m) =>
-      m.rangePx  >= medRange * MIN_RANGE_VS_MEDIAN &&
+      m.rangePx   >= medRange * MIN_RANGE_VS_MEDIAN &&
       m.peakSpeed >= medPeak  * MIN_PEAK_VS_MEDIAN
   );
 
   if (!metrics.length) {
-    return result.map((f) => ({ ...f, phase: "rest" as Phase, repIndex: null }));
+    return result.map((f) => ({
+      ...f,
+      phase:    "rest" as Phase,
+      repIndex: null,
+    }));
   }
 
-  const validSet   = new Set(metrics.map((m) => m.idx));
-  const sortedV    = [...validSet].sort((a, b) => a - b);
-  const remap      = new Map(sortedV.map((old, i) => [old, i]));
+  const validSet = new Set(metrics.map((m) => m.idx));
+  const sortedV  = [...validSet].sort((a, b) => a - b);
+  const remap    = new Map(sortedV.map((old, i) => [old, i]));
 
   for (const f of result) {
     if (f.repIndex === null || !validSet.has(f.repIndex)) {
@@ -607,63 +613,35 @@ interface PauseInfo {
   startTime: number | null;
 }
 
-/**
- * Detects an intentional pause within a rep.
- *
- * A pause is a sustained low-velocity period between the eccentric
- * and concentric phases (or between concentric and eccentric for lifts
- * that start concentrically).
- *
- * The longest such window that exceeds MIN_PAUSE_DURATION_S is returned.
- */
 function detectPauseWithinRep(repFrames: VelocityFrame[]): PauseInfo {
   const none: PauseInfo = { duration: 0, startTime: null };
 
   if (repFrames.length < 3) return none;
 
-  const peakSpeed     = Math.max(...repFrames.map((f) => f.velocitySmoothed));
+  const peakSpeed      = Math.max(...repFrames.map((f) => f.velocitySmoothed));
   const pauseThreshold = peakSpeed * PAUSE_VELOCITY_FRACTION;
 
-  /**
-   * Find the boundary between the two phases:
-   * the last frame of the first phase and the first frame of the second phase.
-   *
-   * We look for a direction change: last downward frame before first upward,
-   * or vice versa. The gap between them is where a pause would live.
-   */
   let phaseTransitionIdx = -1;
 
   for (let i = 1; i < repFrames.length; i++) {
     const prev = repFrames[i - 1].phase;
     const curr = repFrames[i].phase;
 
-    if (
-      prev !== curr &&
-      prev !== "rest" &&
-      curr !== "rest"
-    ) {
+    if (prev !== curr && prev !== "rest" && curr !== "rest") {
       phaseTransitionIdx = i;
       break;
     }
   }
 
-  /**
-   * If no clean transition found, look for a rest gap between phases.
-   */
   if (phaseTransitionIdx === -1) {
-    const phases = repFrames.map((f) => f.phase);
+    const phases    = repFrames.map((f) => f.phase);
     const firstRest = phases.findIndex(
       (p, i) => i > 0 && p === "rest" && phases[i - 1] !== "rest"
     );
-
     if (firstRest === -1) return none;
     phaseTransitionIdx = firstRest;
   }
 
-  /**
-   * Extend the window a little either side of the transition
-   * to capture the full deceleration → pause → acceleration cycle.
-   */
   const windowStart = Math.max(0, phaseTransitionIdx - 5);
   const windowEnd   = Math.min(repFrames.length - 1, phaseTransitionIdx + 15);
   const gapFrames   = repFrames.slice(windowStart, windowEnd + 1);
@@ -696,7 +674,6 @@ function detectPauseWithinRep(repFrames: VelocityFrame[]): PauseInfo {
     }
   }
 
-  // Handle pause that runs to the end of the window
   if (pauseStartIdx !== -1) {
     const dur =
       gapFrames[pauseEndIdx].timeSeconds -
@@ -748,8 +725,8 @@ export function computeRepStats(vFrames: VelocityFrame[]): RepStats[] {
     const eccFrames  = frames.filter((f) => f.phase === "eccentric");
 
     if (
-      frames.length < MIN_REP_FRAMES ||
-      concFrames.length === 0         ||
+      frames.length     < MIN_REP_FRAMES ||
+      concFrames.length === 0            ||
       eccFrames.length  === 0
     ) {
       return;
@@ -787,8 +764,8 @@ export function computeRepStats(vFrames: VelocityFrame[]): RepStats[] {
 // ─── Master export ────────────────────────────────────────────────────────────
 
 export function analyseReps(
-  frames: FrameResult[],
-  fps: number,
+  frames:  FrameResult[],
+  fps:     number,
   options: AnalyseRepOptions = {}
 ): { vFrames: VelocityFrame[]; repStats: RepStats[] } {
   const withVelocity = buildVelocityFrames(frames, fps);
