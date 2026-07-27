@@ -61,12 +61,7 @@ export default function VelocityChart({
      *   bar moving down = negative (eccentric)
      *   bar moving up   = positive (concentric)
      */
-    const signed =
-      f.velocitySmoothed < 1e-6
-        ? 0
-        : isDown
-        ? -speed
-        : speed;
+    const signed = speed < 0.001 ? 0 : isDown ? -speed : speed;
 
     const hasRep = f.repIndex !== null;
 
