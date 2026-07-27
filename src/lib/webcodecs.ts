@@ -1,21 +1,10 @@
 /**
  * WebCodecs video decoder wrapper.
- *
- * Decodes a video file into frames without using HTMLVideoElement seeking.
- * This eliminates the seek overhead that makes analysis slow on mobile.
- *
- * Falls back gracefully to seek-based analysis if WebCodecs is not available
- * or if the codec is not supported.
  */
 
-// ─── Public types ─────────────────────────────────────────────────────────────
-
 export interface DecodedVideoFrame {
-  /** Video timestamp in microseconds */
   timestampUs: number;
-  /** Draw this frame to a canvas context at the given dimensions */
   draw: (ctx: CanvasRenderingContext2D, width: number, height: number) => void;
-  /** Must be called after use to free GPU/memory resources */
   close: () => void;
 }
 
@@ -24,6 +13,12 @@ export interface VideoInfo {
   width:           number;
   height:          number;
   codec:           string;
+}
+
+export interface DecodeResult {
+  framesProcessed: number;
+  /** Actual fps detected from video frame timestamps */
+  effectiveFps:    number;
 }
 
 // ─── Feature detection ────────────────────────────────────────────────────────
@@ -38,10 +33,6 @@ export function isWebCodecsSupported(): boolean {
 
 // ─── Probe video metadata ─────────────────────────────────────────────────────
 
-/**
- * Extract video metadata using a temporary video element.
- * This is fast — no frame decode needed.
- */
 export async function probeVideo(file: File): Promise<VideoInfo> {
   return new Promise((resolve, reject) => {
     const video = document.createElement("video");
@@ -56,21 +47,11 @@ export async function probeVideo(file: File): Promise<VideoInfo> {
       () => {
         URL.revokeObjectURL(url);
 
-        /**
-         * Guess codec from MIME type.
-         * avc1.42E01E = H.264 baseline — the safest default.
-         * Most phone cameras produce H.264 MP4.
-         */
         const mime = file.type.toLowerCase();
         let codec  = "avc1.42E01E";
 
-        if (mime.includes("webm")) {
-          codec = "vp8";
-        } else if (mime.includes("mp4") || mime.includes("quicktime")) {
-          codec = "avc1.42E01E";
-        } else if (mime.includes("avi")) {
-          codec = "avc1.42E01E";
-        }
+        if (mime.includes("webm"))                                    codec = "vp8";
+        else if (mime.includes("mp4") || mime.includes("quicktime"))  codec = "avc1.42E01E";
 
         resolve({
           durationSeconds: video.duration,
@@ -95,11 +76,6 @@ export async function probeVideo(file: File): Promise<VideoInfo> {
 
 // ─── MP4Box loader ────────────────────────────────────────────────────────────
 
-/**
- * Load mp4box.js from CDN as a script tag.
- * Only downloaded when WebCodecs path is taken.
- * Cached on globalThis after first load.
- */
 async function loadMp4Box(): Promise<unknown> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   if ((globalThis as any).MP4Box) return (globalThis as any).MP4Box;
@@ -128,13 +104,6 @@ async function loadMp4Box(): Promise<unknown> {
 
 // ─── AVC description extractor ────────────────────────────────────────────────
 
-/**
- * Extract the AVC (H.264) or HEVC (H.265) decoder configuration record
- * from the MP4 container using mp4box's internal box tree.
- *
- * This is required for H.264 video in MP4 containers — without the
- * description (SPS + PPS NAL units), the VideoDecoder rejects all frames.
- */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function getAvcDescription(mp4boxFile: any, trackId: number): Uint8Array | null {
   try {
@@ -142,14 +111,9 @@ function getAvcDescription(mp4boxFile: any, trackId: number): Uint8Array | null 
     const sampleEntry = trak?.mdia?.minf?.stbl?.stsd?.entries?.[0];
     if (!sampleEntry) return null;
 
-    // avcC = H.264, hvcC = H.265
     const configBox = sampleEntry.avcC ?? sampleEntry.hvcC ?? null;
     if (!configBox) return null;
 
-    /**
-     * Serialise the config box using mp4box's DataStream.
-     * mp4box attaches DataStream to its own namespace.
-     */
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const DataStream = (globalThis as any).DataStream;
     if (!DataStream) return null;
@@ -157,10 +121,6 @@ function getAvcDescription(mp4boxFile: any, trackId: number): Uint8Array | null 
     const stream = new DataStream(undefined, 0, DataStream.BIG_ENDIAN);
     configBox.write(stream);
 
-    /**
-     * The written buffer includes an 8-byte box header (4 bytes size + 4 bytes type).
-     * We skip those to get just the configuration record payload.
-     */
     return new Uint8Array(stream.buffer, 8);
   } catch (e) {
     console.warn("Could not extract AVC description:", String(e));
@@ -170,10 +130,6 @@ function getAvcDescription(mp4boxFile: any, trackId: number): Uint8Array | null 
 
 // ─── MP4Box demuxer ───────────────────────────────────────────────────────────
 
-/**
- * Demux an MP4/MOV ArrayBuffer using mp4box.js and feed encoded chunks
- * to a VideoDecoder.
- */
 async function feedWithMp4Box(
   buffer:  ArrayBuffer,
   decoder: VideoDecoder,
@@ -194,7 +150,6 @@ async function feedWithMp4Box(
       else resolve();
     };
 
-    // Safety timeout — resolve if onFlush never fires
     const timeout = setTimeout(() => {
       console.warn("MP4Box onFlush timeout — resolving anyway");
       done();
@@ -215,12 +170,6 @@ async function feedWithMp4Box(
         return;
       }
 
-      /**
-       * For H.264 in MP4, the decoder must be reconfigured with the
-       * AVC description (SPS + PPS) from the container.
-       * Without this, every chunk fails with:
-       * "A key frame is required after configure() or flush()"
-       */
       const description = getAvcDescription(mp4boxFile, videoTrack.id);
 
       if (description) {
@@ -241,10 +190,6 @@ async function feedWithMp4Box(
 
       mp4boxFile.setExtractionOptions(videoTrack.id, null, { nbSamples: 100 });
 
-      /**
-       * Skip delta frames until the first keyframe arrives.
-       * A VideoDecoder must receive a key frame first after configure().
-       */
       let seenKeyFrame = false;
 
       mp4boxFile.onSamples = (
@@ -258,7 +203,6 @@ async function feedWithMp4Box(
         for (const sample of samples) {
           if (signal?.aborted) break;
 
-          // Wait for the first keyframe
           if (!seenKeyFrame) {
             if (!sample.is_sync) continue;
             seenKeyFrame = true;
@@ -287,7 +231,6 @@ async function feedWithMp4Box(
       done();
     };
 
-    // Feed the full buffer — fileStart must be 0
     const ab = buffer.slice(0) as ArrayBuffer & { fileStart: number };
     ab.fileStart = 0;
     mp4boxFile.appendBuffer(ab);
@@ -297,39 +240,69 @@ async function feedWithMp4Box(
 
 // ─── Main decode function ─────────────────────────────────────────────────────
 
-/**
- * Decode video frames using the WebCodecs API.
- *
- * Calls `onFrame` for each frame that falls on a target timestamp.
- * Calls `onProgress` with 0–100 as decoding progresses.
- * Returns the number of frames processed.
- */
 export async function decodeVideoFrames(
   file:       File,
   targetFps:  number,
   info:       VideoInfo,
-  onFrame:    (frame: DecodedVideoFrame, frameIndex: number) => Promise<void>,
+  onFrame:    (frame: DecodedVideoFrame, frameIndex: number, actualTimestampUs: number) => Promise<void>,
   onProgress: (pct: number) => void,
   signal?:    AbortSignal
-): Promise<number> {
-  const frameIntervalUs   = 1_000_000 / targetFps;
+): Promise<DecodeResult> {
   const totalDurationUs   = info.durationSeconds * 1_000_000;
   const totalTargetFrames = Math.floor(info.durationSeconds * targetFps);
+
+  /**
+   * We detect the actual video fps from the first two decoded frames.
+   * If the video is 30fps but we request 60fps, we adjust frameIntervalUs
+   * to match the actual video so we don't skip or duplicate frames.
+   */
+  let frameIntervalUs     = 1_000_000 / targetFps;
+  let effectiveFps        = targetFps;
+  let firstFrameTs: number | null = null;
+  let fpsDetected         = false;
 
   let frameIndex      = 0;
   let nextTargetUs    = 0;
   let framesProcessed = 0;
 
-  const frameQueue: VideoFrame[]  = [];
-  let   decoderDone               = false;
+  const frameQueue: VideoFrame[]   = [];
+  let   decoderDone                = false;
   let   decoderError: Error | null = null;
   let   notifyNewFrame: (() => void) | null = null;
 
   const wakeConsumer = () => notifyNewFrame?.();
 
-  // ── Create decoder ──────────────────────────────────────────────────────
   const decoder = new VideoDecoder({
     output: (frame) => {
+      /**
+       * Auto-detect actual video fps from first two frames.
+       * Adjusts frameIntervalUs so we select one frame per actual video frame,
+       * not one per target interval (which may not match).
+       */
+      if (!fpsDetected) {
+        if (firstFrameTs === null) {
+          firstFrameTs = frame.timestamp;
+        } else {
+          const actualIntervalUs = frame.timestamp - firstFrameTs;
+          if (actualIntervalUs > 0) {
+            const actualFps = 1_000_000 / actualIntervalUs;
+            console.log(
+              `Video fps detected: ${actualFps.toFixed(1)}fps ` +
+              `(target was ${targetFps}fps)`
+            );
+
+            /**
+             * Use the actual video frame interval.
+             * This ensures we select exactly one decoded frame per
+             * video frame regardless of target fps.
+             */
+            effectiveFps    = actualFps;
+            frameIntervalUs = actualIntervalUs;
+          }
+          fpsDetected = true;
+        }
+      }
+
       frameQueue.push(frame);
       wakeConsumer();
     },
@@ -339,7 +312,6 @@ export async function decodeVideoFrames(
     },
   });
 
-  // ── Check codec support ─────────────────────────────────────────────────
   let support: VideoDecoderSupport;
 
   try {
@@ -360,17 +332,12 @@ export async function decodeVideoFrames(
     );
   }
 
-  /**
-   * Initial configure — may be overridden by feedWithMp4Box once it
-   * extracts the AVC description from the container.
-   */
   decoder.configure({
     codec:  info.codec,
     width:  info.width,
     height: info.height,
   });
 
-  // ── Wait helper ─────────────────────────────────────────────────────────
   const waitForFrame = (): Promise<void> =>
     new Promise((resolve) => {
       if (frameQueue.length > 0 || decoderDone || decoderError) {
@@ -383,7 +350,6 @@ export async function decodeVideoFrames(
       };
     });
 
-  // ── Feed encoded data concurrently ──────────────────────────────────────
   const feedPromise = (async () => {
     try {
       const arrayBuffer = await file.arrayBuffer();
@@ -398,14 +364,13 @@ export async function decodeVideoFrames(
           await decoder.flush();
         }
       } catch {
-        // Ignore flush errors
+        // Ignore
       }
       decoderDone = true;
       wakeConsumer();
     }
   })();
 
-  // ── Consume decoded frames ──────────────────────────────────────────────
   while (framesProcessed < totalTargetFrames) {
     if (signal?.aborted) break;
     if (decoderError) throw decoderError;
@@ -433,7 +398,8 @@ export async function decodeVideoFrames(
           },
           close: () => capturedFrame.close(),
         },
-        frameIndex
+        frameIndex,
+        tsUs  // ← pass actual timestamp through
       );
 
       frameIndex++;
@@ -442,12 +408,10 @@ export async function decodeVideoFrames(
 
       onProgress(Math.min(99, Math.round((tsUs / totalDurationUs) * 100)));
     } else {
-      // Not a target frame — discard
       frame.close();
     }
   }
 
-  // ── Drain remaining frames ──────────────────────────────────────────────
   for (const f of frameQueue) f.close();
   frameQueue.length = 0;
 
@@ -459,5 +423,5 @@ export async function decodeVideoFrames(
     // Ignore
   }
 
-  return framesProcessed;
+  return { framesProcessed, effectiveFps };
 }

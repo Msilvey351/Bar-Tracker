@@ -20,8 +20,6 @@ interface UseVideoAnalyserReturn {
   liveVideoDims: { width: number; height: number } | null;
 }
 
-// ─── Constants ────────────────────────────────────────────────────────────────
-
 const SCALED_WIDTH             = 320;
 const MAX_JUMP_HEIGHT_FRACTION = 0.18;
 const MIN_MAX_JUMP_PX          = 20;
@@ -29,8 +27,6 @@ const SMOOTHING_WINDOW         = 3;
 
 const isMobile = typeof navigator !== "undefined" &&
   /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function chooseAnalysisFps(durationSeconds: number): number {
   if (durationSeconds <= 25) return 60;
@@ -79,8 +75,6 @@ function sharedArrayBufferAvailable(): boolean {
   }
 }
 
-// ─── Hook ─────────────────────────────────────────────────────────────────────
-
 export function useVideoAnalyser(): UseVideoAnalyserReturn {
   const [progress,      setProgress]      = useState(0);
   const [isAnalysing,   setIsAnalysing]   = useState(false);
@@ -98,7 +92,6 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
   const canUseSAB      = useRef(false);
   const abortRef       = useRef<AbortController | null>(null);
 
-  // ── Spin up worker ───────────────────────────────────────────────────────
   useEffect(() => {
     canUseSAB.current = sharedArrayBufferAvailable();
 
@@ -125,7 +118,6 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
     };
   }, []);
 
-  // ── Init shared buffer ───────────────────────────────────────────────────
   const initSharedBuffer = useCallback(
     (width: number, height: number): Promise<void> => {
       return new Promise((resolve) => {
@@ -160,15 +152,6 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
     []
   );
 
-  // ── Frame capture from canvas ────────────────────────────────────────────
-  const captureFromCanvas = useCallback((): ImageData | null => {
-    const canvas = canvasRef.current;
-    if (!canvas) return null;
-    const ctx = canvas.getContext("2d", { willReadFrequently: true });
-    if (!ctx) return null;
-    return ctx.getImageData(0, 0, canvas.width, canvas.height);
-  }, []);
-
   const captureFrame = useCallback((): ImageData | null => {
     const video  = videoRef.current;
     const canvas = canvasRef.current;
@@ -196,7 +179,6 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
     return true;
   }, []);
 
-  // ── Worker communication ─────────────────────────────────────────────────
   const workerSend = useCallback(
     (
       message:     Record<string, unknown>,
@@ -254,7 +236,6 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
     [workerSend, writeFrameToShared]
   );
 
-  // ── Process one frame (shared between both code paths) ───────────────────
   const processFrame = useCallback(
     async (
       imageData:     ImageData,
@@ -264,9 +245,9 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
       currentPoint:  { x: number; y: number },
       previousPoint: { x: number; y: number } | null,
     ): Promise<{
-      newPoint:      { x: number; y: number };
-      newPrevious:   { x: number; y: number };
-      frameResult:   FrameResult;
+      newPoint:    { x: number; y: number };
+      newPrevious: { x: number; y: number };
+      frameResult: FrameResult;
     }> => {
       const tracked   = await workerTrack(imageData);
       const candidate = { x: tracked.x, y: tracked.y };
@@ -281,16 +262,13 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
         imageData.height * MAX_JUMP_HEIGHT_FRACTION
       );
 
-      const jump = distance(candidate, currentPoint);
-
-      const accepted =
-        tracked.confidence >= 0.28 || jump <= maxJump;
-
+      const jump    = distance(candidate, currentPoint);
+      const accepted = tracked.confidence >= 0.28 || jump <= maxJump;
       const newPoint = accepted ? candidate : currentPoint;
 
       return {
         newPoint,
-        newPrevious:  currentPoint,
+        newPrevious: currentPoint,
         frameResult: {
           frameIndex,
           timeSeconds,
@@ -304,7 +282,7 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
     [workerTrack]
   );
 
-  // ── WebCodecs analysis path ──────────────────────────────────────────────
+  // ── WebCodecs path ───────────────────────────────────────────────────────
   const analyseWithWebCodecs = useCallback(
     async (
       file:   File,
@@ -313,9 +291,9 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
     ): Promise<AnalysisResult> => {
       console.log("Using WebCodecs path");
 
-      const info  = await probeVideo(file);
-      const fps   = chooseAnalysisFps(info.durationSeconds);
-      const scale = SCALED_WIDTH / info.width;
+      const info    = await probeVideo(file);
+      const fps     = chooseAnalysisFps(info.durationSeconds);
+      const scale   = SCALED_WIDTH / info.width;
       const scaledH = Math.round(info.height * scale);
 
       canvas.width  = SCALED_WIDTH;
@@ -333,25 +311,23 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
       let previousPoint: { x: number; y: number } | null = null;
 
       const allFrames: FrameResult[] = [];
-      let   seeded = false;
+      let   seeded                   = false;
 
-      await decodeVideoFrames(
+      const { effectiveFps } = await decodeVideoFrames(
         file,
         fps,
         info,
-        async (frame, frameIndex) => {
+        async (frame, frameIndex, actualTimestampUs) => {
           if (abortRef.current?.signal.aborted) {
             frame.close();
             return;
           }
 
-          // Draw decoded frame to canvas at tracking resolution
           frame.draw(ctx, SCALED_WIDTH, scaledH);
           frame.close();
 
           const imageData = ctx.getImageData(0, 0, SCALED_WIDTH, scaledH);
 
-          // Seed tracker on first frame
           if (!seeded) {
             writeFrameToShared(imageData);
             await workerSeed(currentPoint.x, currentPoint.y);
@@ -366,14 +342,11 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
           }
 
           /**
-           * Use sequential frame time based on frameIndex and fps,
-           * not the raw WebCodecs timestamp.
-           *
-           * WebCodecs timestamps are correct for the video but frames
-           * are sampled at targetFps intervals. Using frameIndex/fps
-           * gives consistent dt between frames matching the seek path.
+           * Use the actual WebCodecs timestamp for timeSeconds.
+           * This gives accurate velocity calculation since dt matches
+           * the real time between decoded frames.
            */
-          const timeSeconds = frameIndex / fps;
+          const timeSeconds = actualTimestampUs / 1_000_000;
 
           const { newPoint, newPrevious, frameResult } = await processFrame(
             imageData,
@@ -392,23 +365,20 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
         abortRef.current?.signal
       );
 
+      console.log(`WebCodecs effective fps: ${effectiveFps.toFixed(1)}`);
+
       return {
         frames:          smoothPositions(allFrames),
-        fps,
+        fps:             effectiveFps,  // ← use actual fps, not target
         videoWidth:      info.width,
         videoHeight:     info.height,
         durationSeconds: info.durationSeconds,
       };
     },
-    [
-      initSharedBuffer,
-      writeFrameToShared,
-      workerSeed,
-      processFrame,
-    ]
+    [initSharedBuffer, writeFrameToShared, workerSeed, processFrame]
   );
 
-  // ── Seek-based fallback path ─────────────────────────────────────────────
+  // ── Seek-based fallback ──────────────────────────────────────────────────
   const analyseWithSeek = useCallback(
     async (
       file:   File,
@@ -480,12 +450,7 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
           if (!nextFrame) continue;
 
           const { newPoint, newPrevious, frameResult } = await processFrame(
-            nextFrame,
-            t,
-            fi,
-            scale,
-            currentPoint,
-            previousPoint
+            nextFrame, t, fi, scale, currentPoint, previousPoint
           );
 
           currentPoint  = newPoint;
@@ -511,7 +476,7 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
     [initSharedBuffer, writeFrameToShared, workerSeed, processFrame]
   );
 
-  // ── Main analyse entry point ─────────────────────────────────────────────
+  // ── Main entry point ─────────────────────────────────────────────────────
   const analyse = useCallback(
     async (file: File, seed: Point) => {
       setIsAnalysing(true);
@@ -523,7 +488,7 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
 
       abortRef.current = new AbortController();
 
-      const video  = document.createElement("video");
+      const video = document.createElement("video");
       video.muted       = true;
       video.playsInline = true;
       video.preload     = "auto";
@@ -537,7 +502,6 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
       canvasRef.current = canvas;
 
       try {
-        // Probe metadata (cheap — uses video element)
         const info = await probeVideo(file);
 
         setLiveFps(chooseAnalysisFps(info.durationSeconds));
@@ -545,10 +509,6 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
 
         let analysisResult: AnalysisResult;
 
-        /**
-         * Try WebCodecs first — no seek overhead, much faster on mobile.
-         * Fall back to seek-based if WebCodecs is not supported or fails.
-         */
         if (isWebCodecsSupported()) {
           try {
             analysisResult = await analyseWithWebCodecs(file, seed, canvas);
