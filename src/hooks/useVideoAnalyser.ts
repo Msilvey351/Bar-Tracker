@@ -302,10 +302,6 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
       canvas.width  = SCALED_WIDTH;
       canvas.height = scaledH;
 
-      /**
-       * Canvas context used only as fallback if VideoFrame.copyTo() fails.
-       * Primary pixel capture uses copyTo() to avoid colour space issues.
-       */
       const ctx = canvas.getContext("2d", { willReadFrequently: true });
       if (!ctx) throw new Error("Could not get canvas context");
 
@@ -330,26 +326,18 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
             return;
           }
 
-          /**
-           * KEY FIX: use VideoFrame.copyTo() instead of ctx.drawImage().
-           *
-           * ctx.drawImage(VideoFrame) applies browser colour space
-           * conversion which produces different pixel values than
-           * ctx.drawImage(HTMLVideoElement) used in the seek path.
-           * This difference caused the optical flow tracker to drift
-           * because the patch built at seed time (from seek-like pixels)
-           * didn't match frames captured via WebCodecs drawImage.
-           *
-           * copyTo() gives us raw RGBA pixels with no conversion,
-           * consistent between frames and consistent with the seed patch.
-           */
-          const imageData = await videoFrameToImageData(
-            frame, SCALED_WIDTH, scaledH, canvas, ctx, frame.rawFrame
-          );
-
+          // Use drawImage, but keep it consistent for all frames including seed
+          frame.draw(ctx, SCALED_WIDTH, scaledH);
           frame.close();
 
+          const imageData = ctx.getImageData(0, 0, SCALED_WIDTH, scaledH);
+
           if (!seeded) {
+            /**
+             * Seed the worker using the very first frame output by WebCodecs.
+             * This guarantees the seed patch's color space and luminance
+             * exactly matches all subsequent frames.
+             */
             await workerSeed(currentPoint.x, currentPoint.y, imageData);
             seeded = true;
 
