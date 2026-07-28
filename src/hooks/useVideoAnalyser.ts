@@ -481,7 +481,7 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
 
         let analysisResult: AnalysisResult;
 
-        if (isWebCodecsSupported()) {
+        if (false && isWebCodecsSupported()) {
           try {
             analysisResult = await analyseWithWebCodecs(file, seed, canvas);
           } catch (e) {
