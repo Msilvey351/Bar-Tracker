@@ -3,29 +3,31 @@
  *
  * Uses WASM optical flow compiled from Rust.
  * Falls back to TypeScript implementation if WASM fails to load.
- * Uses SharedArrayBuffer for zero-copy frame sharing (Priority 4).
+ *
+ * SharedArrayBuffer removed — replaced with transferable ImageData buffers
+ * to fix the race condition where shared memory was overwritten before
+ * the worker finished building its patch from the previous frame.
  */
 
 // ─── Message types ────────────────────────────────────────────────────────────
 
 interface InitMessage {
-  type:         "init";
-  sharedBuffer: SharedArrayBuffer;
-  signalBuffer: SharedArrayBuffer;
-  width:        number;
-  height:       number;
-  isMobile:     boolean;
+  type:     "init";
+  width:    number;
+  height:   number;
+  isMobile: boolean;
 }
 
 interface SeedMessage {
-  type: "seed";
-  x:    number;
-  y:    number;
+  type:      "seed";
+  x:         number;
+  y:         number;
+  imageData: ImageData;
 }
 
 interface TrackMessage {
-  type:       "track";
-  imageData?: ImageData;
+  type:      "track";
+  imageData: ImageData;
 }
 
 interface ResetMessage {
@@ -63,33 +65,31 @@ const origWarn = console.warn.bind(console);
 
 console.log = (...args: unknown[]) => {
   origLog(...args);
-  self.postMessage({ type: "log", level: "log", args: args.map(String) } as LogMessage);
+  self.postMessage({
+    type: "log", level: "log", args: args.map(String),
+  } as LogMessage);
 };
 
 console.warn = (...args: unknown[]) => {
   origWarn(...args);
-  self.postMessage({ type: "log", level: "warn", args: args.map(String) } as LogMessage);
+  self.postMessage({
+    type: "log", level: "warn", args: args.map(String),
+  } as LogMessage);
 };
 
 // ─── Tuning ───────────────────────────────────────────────────────────────────
 
-const PATCH_RADIUS   = 15;
-const PATCH_SIZE     = (PATCH_RADIUS * 2 + 1) ** 2;
+const PATCH_RADIUS = 15;
+const PATCH_SIZE   = (PATCH_RADIUS * 2 + 1) ** 2;
 const MIN_CONFIDENCE = 0.28;
 const EPSILON        = 0.01;
 
-/**
- * Maximum LK iterations.
- * Most frames converge in 3–5 iterations via the EPSILON early-exit.
- * Reducing on mobile only affects the rare frames that haven't converged —
- * those are usually fast-movement frames where extra iterations don't help.
- */
 let MAX_ITERATIONS = 20;
 
 // ─── WASM module ──────────────────────────────────────────────────────────────
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-let wasmModule: any        = null;
+let wasmModule: any         = null;
 let patchData:  Float32Array | null = null;
 let outData:    Float32Array | null = null;
 
@@ -101,7 +101,6 @@ async function loadWasm(): Promise<boolean> {
     console.log(`Loading WASM from: ${wasmJsUrl}`);
 
     const mod = await import(/* webpackIgnore: true */ wasmJsUrl);
-
     await mod.default({ module_or_path: wasmBinUrl });
 
     wasmModule = mod;
@@ -118,19 +117,18 @@ async function loadWasm(): Promise<boolean> {
 
 // ─── State ────────────────────────────────────────────────────────────────────
 
-let sharedPixels: Uint8ClampedArray | null = null;
 let frameWidth:   number = 0;
 let frameHeight:  number = 0;
 let currentPoint: { x: number; y: number } | null = null;
 
-// ─── TypeScript fallback optical flow ─────────────────────────────────────────
+// ─── TypeScript optical flow fallback ─────────────────────────────────────────
 
 function sampleLumaTS(
-  data:   Uint8ClampedArray,
-  width:  number,
+  data: Uint8ClampedArray,
+  width: number,
   height: number,
-  x:      number,
-  y:      number
+  x: number,
+  y: number
 ): number {
   if (x < 1 || y < 1 || x >= width - 2 || y >= height - 2) return 0;
 
@@ -198,9 +196,9 @@ function trackPointTS(
     return { x: startX, y: startY, confidence: 0 };
   }
 
-  let gx     = startX;
-  let gy     = startY;
-  const r    = PATCH_RADIUS;
+  let gx  = startX;
+  let gy  = startY;
+  const r = PATCH_RADIUS;
 
   for (let iter = 0; iter < MAX_ITERATIONS; iter++) {
     let b1 = 0, b2 = 0, A11 = 0, A12 = 0, A22 = 0;
@@ -236,7 +234,6 @@ function trackPointTS(
   gx = Math.max(0, Math.min(width  - 1, gx));
   gy = Math.max(0, Math.min(height - 1, gy));
 
-  // NCC confidence
   const newPatch = new Float32Array(PATCH_SIZE);
   let i = 0;
   for (let dy = -r; dy <= r; dy++) {
@@ -271,7 +268,7 @@ function trackPointTS(
   return { x: gx, y: gy, confidence };
 }
 
-// ─── Unified build patch + track ──────────────────────────────────────────────
+// ─── Unified patch + track ────────────────────────────────────────────────────
 
 function buildPatch(
   data:   Uint8ClampedArray,
@@ -296,27 +293,9 @@ function trackPoint(
 ): { x: number; y: number; confidence: number } {
   if (wasmModule && patchData && outData) {
     wasmModule.track_point(data, width, height, cx, cy, patchData, outData);
-    return {
-      x:          outData[0],
-      y:          outData[1],
-      confidence: outData[2],
-    };
+    return { x: outData[0], y: outData[1], confidence: outData[2] };
   }
   return trackPointTS(data, width, height, cx, cy);
-}
-
-// ─── Resolve pixel data ───────────────────────────────────────────────────────
-
-function resolvePixels(msg: TrackMessage): Uint8ClampedArray | null {
-  if (sharedPixels) return sharedPixels;
-  if (msg.imageData) return msg.imageData.data;
-  return null;
-}
-
-function resolveSize(msg: TrackMessage): { w: number; h: number } {
-  if (frameWidth && frameHeight) return { w: frameWidth, h: frameHeight };
-  if (msg.imageData) return { w: msg.imageData.width, h: msg.imageData.height };
-  return { w: 0, h: 0 };
 }
 
 // ─── Message handler ──────────────────────────────────────────────────────────
@@ -327,16 +306,9 @@ self.onmessage = (event: MessageEvent<IncomingMessage>) => {
   switch (msg.type) {
 
     case "init": {
-      sharedPixels = new Uint8ClampedArray(msg.sharedBuffer);
-      frameWidth   = msg.width;
-      frameHeight  = msg.height;
+      frameWidth  = msg.width;
+      frameHeight = msg.height;
 
-      /**
-       * Reduce max iterations on mobile.
-       * Most frames converge in 3–5 iterations anyway via EPSILON early-exit.
-       * The rare frames that need more iterations are fast-movement frames
-       * where extra iterations don't reliably help tracking anyway.
-       */
       MAX_ITERATIONS = msg.isMobile ? 12 : 20;
 
       console.log(
@@ -344,40 +316,61 @@ self.onmessage = (event: MessageEvent<IncomingMessage>) => {
         `mobile: ${msg.isMobile} — maxIter: ${MAX_ITERATIONS}`
       );
 
-      const ack: AckMessage = { type: "ack" };
-      self.postMessage(ack);
+      self.postMessage({ type: "ack" } as AckMessage);
       break;
     }
 
     case "seed": {
-      if (!sharedPixels || !frameWidth || !frameHeight) {
-        console.warn("Seed called before init");
-        self.postMessage({ type: "ack" } as AckMessage);
-        break;
-      }
+      /**
+       * imageData is transferred — worker has exclusive ownership.
+       * No race condition possible.
+       */
+      const { imageData, x, y } = msg;
+      const pixels = imageData.data;
+      const w      = imageData.width;
+      const h      = imageData.height;
 
-      currentPoint = { x: msg.x, y: msg.y };
-      buildPatch(sharedPixels, frameWidth, frameHeight, msg.x, msg.y);
+      // Update dimensions from actual imageData in case init wasn't called
+      frameWidth  = w;
+      frameHeight = h;
+
+      currentPoint = { x, y };
+      buildPatch(pixels, w, h, x, y);
 
       self.postMessage({ type: "ack" } as AckMessage);
       break;
     }
 
     case "track": {
-      const pixels      = resolvePixels(msg);
-      const { w, h }    = resolveSize(msg);
+      /**
+       * imageData is transferred — worker has exclusive ownership.
+       * Previous frame patch was built from a separately transferred buffer,
+       * so there is no shared memory race.
+       */
+      const { imageData } = msg;
+      const pixels = imageData.data;
+      const w      = imageData.width;
+      const h      = imageData.height;
 
-      if (!pixels || !currentPoint || !w || !h) {
+      if (!currentPoint || !w || !h) {
         self.postMessage({
           type: "result", x: 0, y: 0, confidence: 0, tracked: false,
         } as TrackResult);
         break;
       }
 
-      const { x, y, confidence } = trackPoint(pixels, w, h, currentPoint.x, currentPoint.y);
+      const { x, y, confidence } = trackPoint(
+        pixels, w, h, currentPoint.x, currentPoint.y
+      );
+
       const tracked = confidence >= MIN_CONFIDENCE;
 
       if (tracked) {
+        /**
+         * Build patch from the transferred imageData.
+         * Safe: this buffer is exclusively ours for the duration
+         * of this message handler.
+         */
         buildPatch(pixels, w, h, x, y);
         currentPoint = { x, y };
       }
