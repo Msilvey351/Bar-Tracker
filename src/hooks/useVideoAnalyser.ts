@@ -7,6 +7,7 @@ import {
   isWebCodecsSupported,
   probeVideo,
   decodeVideoFrames,
+  type DecodedVideoFrame
 } from "@/lib/webcodecs";
 
 interface UseVideoAnalyserReturn {
@@ -64,6 +65,69 @@ function smoothPositions(frames: FrameResult[]): FrameResult[] {
       },
     };
   });
+}
+
+/**
+ * Copy a VideoFrame to an ImageData at a scaled resolution.
+ *
+ * Uses VideoFrame.copyTo() which copies raw pixels directly
+ * without going through canvas colour space conversion.
+ * This produces the same pixel values as the seek path
+ * (HTMLVideoElement drawn to canvas), avoiding the drift
+ * that occurred when using ctx.drawImage(VideoFrame).
+ *
+ * Falls back to canvas drawImage if copyTo fails.
+ */
+/**
+ * Copy a VideoFrame to an ImageData at a scaled resolution.
+ *
+ * Uses VideoFrame.copyTo() which copies raw pixels directly
+ * without going through canvas colour space conversion.
+ * Falls back to canvas drawImage if copyTo fails.
+ */
+async function videoFrameToImageData(
+  frame:    DecodedVideoFrame,
+  width:    number,
+  height:   number,
+  canvas:   HTMLCanvasElement,
+  ctx:      CanvasRenderingContext2D,
+  rawFrame: VideoFrame | null
+): Promise<ImageData> {
+  /**
+   * Try copyTo() on the raw VideoFrame if we have it.
+   * This avoids colour space conversion that ctx.drawImage applies.
+   */
+  if (rawFrame) {
+    try {
+      const buffer = new Uint8Array(width * height * 4);
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (rawFrame as any).copyTo(buffer, {
+        format: "RGBA",
+        rect: {
+          x:      0,
+          y:      0,
+          width:  rawFrame.codedWidth,
+          height: rawFrame.codedHeight,
+        },
+        layout: [{ offset: 0, stride: width * 4 }],
+      });
+
+      return new ImageData(
+        new Uint8ClampedArray(buffer.buffer),
+        width,
+        height
+      );
+    } catch (e) {
+      console.warn("VideoFrame.copyTo() failed, using canvas fallback:", String(e));
+    }
+  }
+
+  // Canvas fallback
+  canvas.width  = width;
+  canvas.height = height;
+  frame.draw(ctx, width, height);
+  return ctx.getImageData(0, 0, width, height);
 }
 
 export function useVideoAnalyser(): UseVideoAnalyserReturn {
@@ -135,11 +199,6 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
     []
   );
 
-  /**
-   * Send init message so worker knows dimensions and mobile flag.
-   * We no longer use SharedArrayBuffer — removed to fix the race condition
-   * where shared memory was overwritten before the worker finished reading.
-   */
   const workerInit = useCallback(
     async (width: number, height: number): Promise<void> => {
       await workerSend({
@@ -152,10 +211,6 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
     [workerSend]
   );
 
-  /**
-   * Seed: transfer the first frame's imageData to the worker.
-   * Transferring gives the worker exclusive ownership — no race condition.
-   */
   const workerSeed = useCallback(
     async (x: number, y: number, imageData: ImageData): Promise<void> => {
       await workerSend(
@@ -167,14 +222,6 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
     [workerSend]
   );
 
-  /**
-   * Track: always transfer the buffer.
-   *
-   * Previously we used SharedArrayBuffer (zero-copy) but this caused a race:
-   * the main thread overwrote shared memory with the next frame before the
-   * worker had finished building its patch from the current frame.
-   * Transferring gives the worker exclusive ownership until it responds.
-   */
   const workerTrack = useCallback(
     async (frame: ImageData): Promise<{
       x: number; y: number; confidence: number; tracked: boolean;
@@ -184,30 +231,12 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
         "result",
         [frame.data.buffer]
       );
-      return result as { x: number; y: number; confidence: number; tracked: boolean };
+      return result as {
+        x: number; y: number; confidence: number; tracked: boolean;
+      };
     },
     [workerSend]
   );
-
-  // ── Capture frame from video into canvas ─────────────────────────────────
-  const captureFrame = useCallback((): ImageData | null => {
-    const video  = videoRef.current;
-    const canvas = canvasRef.current;
-    if (!video || !canvas) return null;
-    if (video.videoWidth === 0 || video.videoHeight === 0) return null;
-
-    const scale = SCALED_WIDTH / video.videoWidth;
-    const h     = Math.round(video.videoHeight * scale);
-
-    canvas.width  = SCALED_WIDTH;
-    canvas.height = h;
-
-    const ctx = canvas.getContext("2d", { willReadFrequently: true });
-    if (!ctx) return null;
-
-    ctx.drawImage(video, 0, 0, SCALED_WIDTH, h);
-    return ctx.getImageData(0, 0, SCALED_WIDTH, h);
-  }, []);
 
   // ── Process one tracked frame ─────────────────────────────────────────────
   const processFrame = useCallback(
@@ -273,6 +302,10 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
       canvas.width  = SCALED_WIDTH;
       canvas.height = scaledH;
 
+      /**
+       * Canvas context used only as fallback if VideoFrame.copyTo() fails.
+       * Primary pixel capture uses copyTo() to avoid colour space issues.
+       */
       const ctx = canvas.getContext("2d", { willReadFrequently: true });
       if (!ctx) throw new Error("Could not get canvas context");
 
@@ -297,17 +330,26 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
             return;
           }
 
-          frame.draw(ctx, SCALED_WIDTH, scaledH);
+          /**
+           * KEY FIX: use VideoFrame.copyTo() instead of ctx.drawImage().
+           *
+           * ctx.drawImage(VideoFrame) applies browser colour space
+           * conversion which produces different pixel values than
+           * ctx.drawImage(HTMLVideoElement) used in the seek path.
+           * This difference caused the optical flow tracker to drift
+           * because the patch built at seed time (from seek-like pixels)
+           * didn't match frames captured via WebCodecs drawImage.
+           *
+           * copyTo() gives us raw RGBA pixels with no conversion,
+           * consistent between frames and consistent with the seed patch.
+           */
+          const imageData = await videoFrameToImageData(
+            frame, SCALED_WIDTH, scaledH, canvas, ctx, frame.rawFrame
+          );
+
           frame.close();
 
-          // getImageData creates a new ArrayBuffer — safe to transfer
-          const imageData = ctx.getImageData(0, 0, SCALED_WIDTH, scaledH);
-
           if (!seeded) {
-            /**
-             * Transfer first frame directly to worker for seeding.
-             * Worker now owns the buffer — no shared memory race.
-             */
             await workerSeed(currentPoint.x, currentPoint.y, imageData);
             seeded = true;
 
@@ -481,7 +523,12 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
 
         let analysisResult: AnalysisResult;
 
-        if (false && isWebCodecsSupported()) {
+        /**
+         * WebCodecs path: faster, no seek overhead.
+         * Now uses VideoFrame.copyTo() for pixel capture to avoid
+         * colour space conversion differences vs seek path.
+         */
+        if (isWebCodecsSupported()) {
           try {
             analysisResult = await analyseWithWebCodecs(file, seed, canvas);
           } catch (e) {

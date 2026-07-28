@@ -6,6 +6,8 @@ export interface DecodedVideoFrame {
   timestampUs: number;
   draw: (ctx: CanvasRenderingContext2D, width: number, height: number) => void;
   close: () => void;
+  /** Raw VideoFrame for direct pixel access via copyTo() */
+  rawFrame: VideoFrame | null;
 }
 
 export interface VideoInfo {
@@ -397,9 +399,10 @@ export async function decodeVideoFrames(
             );
           },
           close: () => capturedFrame.close(),
+          rawFrame: capturedFrame,  // ← expose raw frame
         },
         frameIndex,
-        tsUs  // ← pass actual timestamp through
+        tsUs
       );
 
       frameIndex++;
