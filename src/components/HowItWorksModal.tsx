@@ -36,7 +36,7 @@ export default function HowItWorksModal({ onClose }: Props) {
           then it is available at /how-it-works.jpg
         */}
         <figure className="mb-5 rounded-xl overflow-hidden border border-white/10">
-          <div className="relative w-full" style={{ aspectRatio: "16/9" }}>
+          <div className="relative w-full" style={{ aspectRatio: "18/9" }}>
             <Image
               src="/how-it-works.png"
               alt="Diagram showing crosshair placement: tap 1 on bar end, tap 2 on plate top, tap 3 on plate bottom"
