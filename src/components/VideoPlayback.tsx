@@ -30,28 +30,21 @@ export default function VideoPlayback({ file, result }: Props) {
     setError(null);
     setPlaying(false);
 
-    // Clean up previous URL
-    if (urlRef.current) {
-      URL.revokeObjectURL(urlRef.current);
-      urlRef.current = null;
-    }
-
     let cancelled = false;
 
     // Create URL
     const url = URL.createObjectURL(file);
     urlRef.current = url;
 
-    // Critical for iOS/Mobile
+    // Set attributes before src
     video.muted = true;
     video.playsInline = true;
-    video.controls = false;
     video.preload = "auto";
-    video.removeAttribute("crossorigin"); // Must not be present for blob URLs
+    // Ensure no crossOrigin attribute exists
+    video.removeAttribute("crossorigin");
 
-    // Apply src
+    // Apply src. Do NOT call video.load() here.
     video.src = url;
-    video.load();
 
     const onCanPlay = () => {
       if (!cancelled) setReady(true);
@@ -65,25 +58,23 @@ export default function VideoPlayback({ file, result }: Props) {
       
       console.warn(`Playback Video Error ${code}: ${msg}`);
       
-      // Don't show scary error immediately if it's just a warning
       if (code === 4) {
-          setError(`Video playback not supported by browser (Code 4)`);
+          setError(`Video playback not supported (Code 4)`);
       } else {
           setError(`Video error ${code}: ${msg}`);
       }
     };
 
-    video.addEventListener("canplay", onCanPlay, { once: true });
+    video.addEventListener("loadedmetadata", onCanPlay, { once: true });
     video.addEventListener("error", onError, { once: true });
 
     return () => {
       cancelled = true;
       cancelAnimationFrame(animRef.current);
-      video.removeEventListener("canplay", onCanPlay);
+      video.removeEventListener("loadedmetadata", onCanPlay);
       video.removeEventListener("error", onError);
       video.pause();
-      video.removeAttribute('src');
-      video.load();
+      video.src = "";
       if (urlRef.current) {
         URL.revokeObjectURL(urlRef.current);
         urlRef.current = null;
@@ -158,9 +149,12 @@ export default function VideoPlayback({ file, result }: Props) {
 
         {/* Error state */}
         {error && (
-          <div className="absolute inset-0 flex items-center justify-center z-10 px-6">
+          <div className="absolute inset-0 flex items-center justify-center z-10 px-6 bg-black/80">
             <div className="text-center">
-              <p className="text-red-400 text-sm mb-3">{error}</p>
+              <p className="text-red-400 text-sm mb-3 font-semibold">{error}</p>
+              <p className="text-white/40 text-xs">
+                The analysis was successful, but your browser cannot play this specific video format back.
+              </p>
             </div>
           </div>
         )}
@@ -169,7 +163,6 @@ export default function VideoPlayback({ file, result }: Props) {
         <video
           ref={videoRef}
           onEnded={onEnded}
-          onCanPlay={() => setReady(true)}
           playsInline
           muted
           className="w-full block"
