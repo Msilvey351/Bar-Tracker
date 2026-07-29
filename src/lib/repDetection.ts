@@ -15,8 +15,8 @@ export interface AnalyseRepOptions {
 
 // ─── Tuning ───────────────────────────────────────────────────────────────────
 
-const SPEED_SMOOTH_WINDOW        = 25;
-const VY_SMOOTH_WINDOW           = 31;
+const SPEED_SMOOTH_WINDOW        = 7;
+const VY_SMOOTH_WINDOW           = 11;
 
 /**
  * Lowered from 0.07 → 0.04 so more frames near the zero crossing
