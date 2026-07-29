@@ -189,20 +189,17 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
           setTimeout(() => reject(new Error("Metadata timeout")), 10_000);
         });
 
-        // Wait until enough data is buffered to play through without stuttering
+        // Wait until enough data is buffered to play through
         await new Promise<void>((resolve) => {
            if (video.readyState >= 3) {
              resolve();
            } else {
              video.addEventListener("canplaythrough", () => resolve(), { once: true });
-             setTimeout(resolve, 5000); // safety fallback
+             setTimeout(resolve, 5000);
            }
         });
 
         const duration    = video.duration;
-        // With the fast playback method, we just process every frame the hardware 
-        // decoder gives us. We calculate the approximate FPS to pass to the rep 
-        // detector, but we don't strictly enforce it.
         const approximateFps = chooseAnalysisFps(duration); 
         
         const videoWidth  = video.videoWidth;
@@ -231,11 +228,27 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
         // Fast hardware-synced playback loop
         await new Promise<void>((resolve, reject) => {
           
+          let safetyTimeout: NodeJS.Timeout;
+          let isFinished = false;
+
+          const finish = () => {
+             if (isFinished) return;
+             isFinished = true;
+             clearTimeout(safetyTimeout);
+             video.pause();
+             resolve();
+          };
+
+          // Native video ended event guarantees we are done
+          video.addEventListener("ended", finish, { once: true });
+
           const processNextFrame = async (now: number, metadata: VideoFrameCallbackMetadata) => {
-            if (abortRef.current?.signal.aborted) {
-              resolve();
+            if (abortRef.current?.signal.aborted || isFinished) {
+              finish();
               return;
             }
+
+            clearTimeout(safetyTimeout);
 
             const currentTime = metadata.mediaTime;
             
@@ -243,6 +256,8 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
             if (currentTime === lastProcessedTime) {
                if (!video.ended && !video.paused) {
                  video.requestVideoFrameCallback(processNextFrame);
+               } else {
+                 finish();
                }
                return;
             }
@@ -286,12 +301,20 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
                setProgress(Math.round((currentTime / duration) * 100));
             }
 
+            // Standard termination check
             if (!video.ended && currentTime < duration - 0.05) {
-               // Must call play() to advance to the next frame
                if (video.paused) video.play().catch(reject);
+               
+               // Set a safety timeout. If the browser hangs at the end of the video
+               // and never fires another frame callback, we kill the loop and resolve.
+               safetyTimeout = setTimeout(() => {
+                  console.log("Safety timeout hit - ending loop early.");
+                  finish();
+               }, 500);
+
                video.requestVideoFrameCallback(processNextFrame);
             } else {
-               resolve();
+               finish();
             }
           };
 
