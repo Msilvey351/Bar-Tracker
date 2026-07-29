@@ -2,12 +2,6 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AnalysisResult, FrameResult, Point } from "@/types";
-import { seekVideo, waitUntilReady } from "@/lib/seekVideo";
-import {
-  isWebCodecsSupported,
-  probeVideo,
-  decodeVideoFrames,
-} from "@/lib/webcodecs";
 
 interface UseVideoAnalyserReturn {
   analyse:       (file: File, seed: Point) => Promise<void>;
@@ -75,10 +69,8 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
   const [liveFps,       setLiveFps]       = useState(0);
   const [liveVideoDims, setLiveVideoDims] = useState<{ width: number; height: number } | null>(null);
 
-  const videoRef   = useRef<HTMLVideoElement | null>(null);
-  const canvasRef  = useRef<HTMLCanvasElement | null>(null);
-  const workerRef  = useRef<Worker | null>(null);
-  const abortRef   = useRef<AbortController | null>(null);
+  const workerRef = useRef<Worker | null>(null);
+  const abortRef  = useRef<AbortController | null>(null);
 
   // ── Spin up worker ───────────────────────────────────────────────────────
   useEffect(() => {
@@ -137,12 +129,7 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
 
   const workerInit = useCallback(
     async (width: number, height: number): Promise<void> => {
-      await workerSend({
-        type:     "init",
-        width,
-        height,
-        isMobile,
-      }, "ack");
+      await workerSend({ type: "init", width, height, isMobile }, "ack");
     },
     [workerSend]
   );
@@ -159,262 +146,18 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
   );
 
   const workerTrack = useCallback(
-    async (frame: ImageData): Promise<{
-      x: number; y: number; confidence: number; tracked: boolean;
-    }> => {
+    async (frame: ImageData): Promise<{ x: number; y: number; confidence: number; tracked: boolean; }> => {
       const result = await workerSend(
         { type: "track", imageData: frame },
         "result",
         [frame.data.buffer]
       );
-      return result as {
-        x: number; y: number; confidence: number; tracked: boolean;
-      };
+      return result as { x: number; y: number; confidence: number; tracked: boolean; };
     },
     [workerSend]
   );
 
-  // ── Process one tracked frame ─────────────────────────────────────────────
-  const processFrame = useCallback(
-    async (
-      imageData:     ImageData,
-      timeSeconds:   number,
-      frameIndex:    number,
-      scale:         number,
-      currentPoint:  { x: number; y: number },
-      previousPoint: { x: number; y: number } | null,
-    ): Promise<{
-      newPoint:    { x: number; y: number };
-      newPrevious: { x: number; y: number };
-      frameResult: FrameResult;
-    }> => {
-      const tracked   = await workerTrack(imageData);
-      const candidate = { x: tracked.x, y: tracked.y };
-
-      const recentStep = previousPoint
-        ? distance(currentPoint, previousPoint)
-        : 0;
-
-      const maxJump = Math.max(
-        MIN_MAX_JUMP_PX,
-        recentStep * 3.5,
-        imageData.height * MAX_JUMP_HEIGHT_FRACTION
-      );
-
-      const jump     = distance(candidate, currentPoint);
-      const accepted = tracked.confidence >= 0.28 || jump <= maxJump;
-      const newPoint = accepted ? candidate : currentPoint;
-
-      return {
-        newPoint,
-        newPrevious: currentPoint,
-        frameResult: {
-          frameIndex,
-          timeSeconds,
-          position: {
-            x: newPoint.x / scale,
-            y: newPoint.y / scale,
-          },
-        },
-      };
-    },
-    [workerTrack]
-  );
-
-  // ── WebCodecs analysis path ──────────────────────────────────────────────
-  const analyseWithWebCodecs = useCallback(
-    async (
-      file:   File,
-      seed:   Point,
-      canvas: HTMLCanvasElement
-    ): Promise<AnalysisResult> => {
-      console.log("Using WebCodecs path");
-
-      const info    = await probeVideo(file);
-      const fps     = chooseAnalysisFps(info.durationSeconds);
-      const scale   = SCALED_WIDTH / info.width;
-      const scaledH = Math.round(info.height * scale);
-
-      canvas.width  = SCALED_WIDTH;
-      canvas.height = scaledH;
-
-      const ctx = canvas.getContext("2d", { willReadFrequently: true });
-      if (!ctx) throw new Error("Could not get canvas context");
-
-      await workerInit(SCALED_WIDTH, scaledH);
-
-      let currentPoint:  { x: number; y: number } = {
-        x: seed.x * scale,
-        y: seed.y * scale,
-      };
-      let previousPoint: { x: number; y: number } | null = null;
-
-      const allFrames: FrameResult[] = [];
-      let   seeded = false;
-
-      const { effectiveFps } = await decodeVideoFrames(
-        file,
-        fps,
-        info,
-        async (frame, frameIndex, actualTimestampUs) => {
-          if (abortRef.current?.signal.aborted) {
-            frame.close();
-            return;
-          }
-
-          // Use drawImage, but keep it consistent for all frames including seed
-          frame.draw(ctx, SCALED_WIDTH, scaledH);
-          frame.close();
-
-          const imageData = ctx.getImageData(0, 0, SCALED_WIDTH, scaledH);
-
-          if (!seeded) {
-            /**
-             * Seed the worker using the very first frame output by WebCodecs.
-             * This guarantees the seed patch's color space and luminance
-             * exactly matches all subsequent frames.
-             */
-            await workerSeed(currentPoint.x, currentPoint.y, imageData);
-            seeded = true;
-
-            allFrames.push({
-              frameIndex:  0,
-              timeSeconds: 0,
-              position:    { x: seed.x, y: seed.y },
-            });
-            return;
-          }
-
-          const timeSeconds = actualTimestampUs / 1_000_000;
-
-          const { newPoint, newPrevious, frameResult } = await processFrame(
-            imageData,
-            timeSeconds,
-            frameIndex,
-            scale,
-            currentPoint,
-            previousPoint
-          );
-
-          currentPoint  = newPoint;
-          previousPoint = newPrevious;
-          allFrames.push(frameResult);
-        },
-        (pct) => setProgress(pct),
-        abortRef.current?.signal
-      );
-
-      console.log(`WebCodecs effective fps: ${effectiveFps.toFixed(1)}`);
-
-      return {
-        frames:          smoothPositions(allFrames),
-        fps:             effectiveFps,
-        videoWidth:      info.width,
-        videoHeight:     info.height,
-        durationSeconds: info.durationSeconds,
-      };
-    },
-    [workerInit, workerSeed, processFrame]
-  );
-
-  // ── Seek-based fallback path ─────────────────────────────────────────────
-  const analyseWithSeek = useCallback(
-    async (
-      file:   File,
-      seed:   Point,
-      video:  HTMLVideoElement,
-      canvas: HTMLCanvasElement
-    ): Promise<AnalysisResult> => {
-      console.log("Using seek-based fallback path");
-
-      const url = URL.createObjectURL(file);
-      video.src = url;
-
-      try {
-        await new Promise<void>((resolve, reject) => {
-          video.addEventListener("loadedmetadata", () => resolve(), { once: true });
-          video.addEventListener("error", () => reject(new Error("Video load error")), { once: true });
-          setTimeout(() => reject(new Error("Metadata timeout")), 10_000);
-        });
-
-        const duration    = video.duration;
-        const fps         = chooseAnalysisFps(duration);
-        const totalFrames = Math.floor(duration * fps);
-        const videoWidth  = video.videoWidth;
-        const videoHeight = video.videoHeight;
-        const scale       = SCALED_WIDTH / videoWidth;
-        const scaledH     = Math.round(videoHeight * scale);
-
-        canvas.width  = SCALED_WIDTH;
-        canvas.height = scaledH;
-
-        let currentPoint:  { x: number; y: number } = {
-          x: seed.x * scale,
-          y: seed.y * scale,
-        };
-        let previousPoint: { x: number; y: number } | null = null;
-
-        await waitUntilReady(video);
-        video.pause();
-        await seekVideo(video, 0);
-        await new Promise((r) => setTimeout(r, 100));
-
-        const captureCurrentFrame = (): ImageData | null => {
-          const ctx = canvas.getContext("2d", { willReadFrequently: true });
-          if (!ctx) return null;
-          ctx.drawImage(video, 0, 0, SCALED_WIDTH, scaledH);
-          return ctx.getImageData(0, 0, SCALED_WIDTH, scaledH);
-        };
-
-        const firstFrame = captureCurrentFrame();
-        if (!firstFrame) throw new Error("Could not capture first frame");
-
-        await workerInit(SCALED_WIDTH, scaledH);
-        await workerSeed(currentPoint.x, currentPoint.y, firstFrame);
-
-        const allFrames: FrameResult[] = [
-          { frameIndex: 0, timeSeconds: 0, position: { x: seed.x, y: seed.y } },
-        ];
-
-        for (let fi = 1; fi < totalFrames; fi++) {
-          if (abortRef.current?.signal.aborted) break;
-
-          const t = fi / fps;
-          if (t > duration) break;
-
-          await seekVideo(video, t);
-
-          const nextFrame = captureCurrentFrame();
-          if (!nextFrame) continue;
-
-          const { newPoint, newPrevious, frameResult } = await processFrame(
-            nextFrame, t, fi, scale, currentPoint, previousPoint
-          );
-
-          currentPoint  = newPoint;
-          previousPoint = newPrevious;
-          allFrames.push(frameResult);
-
-          if (fi % 15 === 0) {
-            setProgress(Math.round((fi / totalFrames) * 100));
-          }
-        }
-
-        return {
-          frames:          smoothPositions(allFrames),
-          fps,
-          videoWidth,
-          videoHeight,
-          durationSeconds: duration,
-        };
-      } finally {
-        URL.revokeObjectURL(url);
-      }
-    },
-    [workerInit, workerSeed, processFrame]
-  );
-
-  // ── Main entry point ─────────────────────────────────────────────────────
+  // ── Main analysis entry point ─────────────────────────────────────────────
   const analyse = useCallback(
     async (file: File, seed: Point) => {
       setIsAnalysing(true);
@@ -430,52 +173,160 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
       video.muted       = true;
       video.playsInline = true;
       video.preload     = "auto";
-      video.style.cssText =
-        "position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;";
-
+      video.style.cssText = "position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;";
       document.body.appendChild(video);
 
-      const canvas      = document.createElement("canvas");
-      videoRef.current  = video;
-      canvasRef.current = canvas;
+      const canvas = document.createElement("canvas");
+      let url: string | null = null;
 
       try {
-        const info = await probeVideo(file);
+        url = URL.createObjectURL(file);
+        video.src = url;
 
-        setLiveFps(chooseAnalysisFps(info.durationSeconds));
-        setLiveVideoDims({ width: info.width, height: info.height });
+        await new Promise<void>((resolve, reject) => {
+          video.addEventListener("loadedmetadata", () => resolve(), { once: true });
+          video.addEventListener("error", () => reject(new Error("Video load error")), { once: true });
+          setTimeout(() => reject(new Error("Metadata timeout")), 10_000);
+        });
 
-        let analysisResult: AnalysisResult;
+        // Wait until enough data is buffered to play through without stuttering
+        await new Promise<void>((resolve) => {
+           if (video.readyState >= 3) {
+             resolve();
+           } else {
+             video.addEventListener("canplaythrough", () => resolve(), { once: true });
+             setTimeout(resolve, 5000); // safety fallback
+           }
+        });
 
-        if (isWebCodecsSupported()) {
-          try {
-            analysisResult = await analyseWithWebCodecs(file, seed, canvas);
-          } catch (e) {
-            console.warn("WebCodecs failed, falling back to seek:", String(e));
-            analysisResult = await analyseWithSeek(file, seed, video, canvas);
-          }
-        } else {
-          analysisResult = await analyseWithSeek(file, seed, video, canvas);
-        }
+        const duration    = video.duration;
+        // With the fast playback method, we just process every frame the hardware 
+        // decoder gives us. We calculate the approximate FPS to pass to the rep 
+        // detector, but we don't strictly enforce it.
+        const approximateFps = chooseAnalysisFps(duration); 
+        
+        const videoWidth  = video.videoWidth;
+        const videoHeight = video.videoHeight;
+        const scale       = SCALED_WIDTH / videoWidth;
+        const scaledH     = Math.round(videoHeight * scale);
 
-        setLiveFrames(analysisResult.frames);
-        setResult(analysisResult);
+        canvas.width  = SCALED_WIDTH;
+        canvas.height = scaledH;
+        const ctx = canvas.getContext("2d", { willReadFrequently: true });
+        if (!ctx) throw new Error("Could not get canvas context");
+
+        setLiveFps(approximateFps);
+        setLiveVideoDims({ width: videoWidth, height: videoHeight });
+
+        let currentPoint: Point = { x: seed.x * scale, y: seed.y * scale };
+        let previousPoint: Point | null = null;
+
+        await workerInit(SCALED_WIDTH, scaledH);
+
+        const allFrames: FrameResult[] = [];
+        let seeded = false;
+        let framesProcessed = 0;
+        let lastProcessedTime = -1;
+        
+        // Fast hardware-synced playback loop
+        await new Promise<void>((resolve, reject) => {
+          
+          const processNextFrame = async (now: number, metadata: VideoFrameCallbackMetadata) => {
+            if (abortRef.current?.signal.aborted) {
+              resolve();
+              return;
+            }
+
+            const currentTime = metadata.mediaTime;
+            
+            // The browser sometimes fires callbacks for the same frame twice.
+            if (currentTime === lastProcessedTime) {
+               if (!video.ended && !video.paused) {
+                 video.requestVideoFrameCallback(processNextFrame);
+               }
+               return;
+            }
+            lastProcessedTime = currentTime;
+
+            // Draw and capture
+            ctx.drawImage(video, 0, 0, SCALED_WIDTH, scaledH);
+            const imageData = ctx.getImageData(0, 0, SCALED_WIDTH, scaledH);
+
+            if (!seeded) {
+              await workerSeed(currentPoint.x, currentPoint.y, imageData);
+              seeded = true;
+              allFrames.push({
+                frameIndex: 0,
+                timeSeconds: currentTime,
+                position: { x: seed.x, y: seed.y },
+              });
+            } else {
+              const tracked = await workerTrack(imageData);
+              const candidate = { x: tracked.x, y: tracked.y };
+
+              const recentStep = previousPoint ? distance(currentPoint, previousPoint) : 0;
+              const maxJump = Math.max(MIN_MAX_JUMP_PX, recentStep * 3.5, scaledH * MAX_JUMP_HEIGHT_FRACTION);
+              const jump = distance(candidate, currentPoint);
+
+              const accepted = tracked.confidence >= 0.28 || jump <= maxJump;
+              const newPoint = accepted ? candidate : currentPoint;
+
+              previousPoint = currentPoint;
+              currentPoint = newPoint;
+
+              allFrames.push({
+                frameIndex: framesProcessed,
+                timeSeconds: currentTime,
+                position: { x: newPoint.x / scale, y: newPoint.y / scale },
+              });
+            }
+
+            framesProcessed++;
+            if (framesProcessed % 10 === 0) {
+               setProgress(Math.round((currentTime / duration) * 100));
+            }
+
+            if (!video.ended && currentTime < duration - 0.05) {
+               // Must call play() to advance to the next frame
+               if (video.paused) video.play().catch(reject);
+               video.requestVideoFrameCallback(processNextFrame);
+            } else {
+               resolve();
+            }
+          };
+
+          // Start the loop
+          video.currentTime = 0;
+          video.requestVideoFrameCallback(processNextFrame);
+          video.play().catch(reject);
+        });
+
+        // ── Smooth and emit final result ─────────────────────────────────────────
+        const smoothed = smoothPositions(allFrames);
+        setLiveFrames(smoothed);
+
+        // Recalculate true FPS based on how many frames we actually got
+        const trueFps = allFrames.length / duration;
+
+        setResult({
+          frames: smoothed,
+          fps: trueFps,
+          videoWidth,
+          videoHeight,
+          durationSeconds: duration,
+        });
+
       } catch (e) {
         setError(e instanceof Error ? e.message : "Unknown error");
       } finally {
+        if (url) URL.revokeObjectURL(url);
         if (document.body.contains(video)) document.body.removeChild(video);
-
         workerRef.current?.postMessage({ type: "reset" });
-
-        videoRef.current  = null;
-        canvasRef.current = null;
-        abortRef.current  = null;
-
         setIsAnalysing(false);
         setProgress(100);
       }
     },
-    [analyseWithWebCodecs, analyseWithSeek]
+    [workerInit, workerSeed, workerTrack]
   );
 
   return {
