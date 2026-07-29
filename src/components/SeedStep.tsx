@@ -64,7 +64,8 @@ export default function SeedStep({ file, onSeedSet }: Props) {
 
   /**
    * Crosshair position in CLIENT (viewport) pixels.
-   * Starts at 0,0 — centred once canvas is ready.
+   * This is the raw clientX/Y from mouse or touch events.
+   * cssToVideo() converts this to video pixel coords when needed.
    */
   const [crosshairClient, setCrosshairClient] = useState({ x: 0, y: 0 });
   const draggingRef = useRef(false);
@@ -74,7 +75,7 @@ export default function SeedStep({ file, onSeedSet }: Props) {
     const video = videoRef.current;
     if (!video) return;
 
-    const url = URL.createObjectURL(file);
+    const url       = URL.createObjectURL(file);
     video.src       = url;
     video.muted     = true;
     video.preload   = "auto";
@@ -103,24 +104,25 @@ export default function SeedStep({ file, onSeedSet }: Props) {
     };
   }, [file]);
 
-  // ── Centre crosshair once canvas is ready ────────────────────────────────
+  // ── Centre crosshair on canvas centre ────────────────────────────────────
   const centreCrosshair = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const rect = canvas.getBoundingClientRect();
-    setCrosshairClient({
-      x: rect.left + rect.width  / 2,
-      y: rect.top  + rect.height / 2,
-    });
+    // Use a small delay to ensure the canvas has finished layout
+    setTimeout(() => {
+      const rect = canvas.getBoundingClientRect();
+      setCrosshairClient({
+        x: rect.left + rect.width  / 2,
+        y: rect.top  + rect.height / 2,
+      });
+    }, 50);
   }, []);
 
   useEffect(() => {
-    if (!ready) return;
-    const t = setTimeout(centreCrosshair, 50);
-    return () => clearTimeout(t);
+    if (ready) centreCrosshair();
   }, [ready, centreCrosshair]);
 
-  // ── Clamp a client position to stay within canvas bounds ─────────────────
+  // ── Clamp client position to canvas bounds ────────────────────────────────
   const clampToCanvas = useCallback((clientX: number, clientY: number) => {
     const canvas = canvasRef.current;
     if (!canvas) return { x: clientX, y: clientY };
@@ -175,7 +177,7 @@ export default function SeedStep({ file, onSeedSet }: Props) {
     };
   }, [clampToCanvas]);
 
-  // ── Get current crosshair position in VIDEO pixels ───────────────────────
+  // ── Convert crosshair position to video pixel coords ─────────────────────
   const getCrosshairVideoPoint = useCallback((): Point | null => {
     const canvas = canvasRef.current;
     if (!canvas) return null;
@@ -243,10 +245,32 @@ export default function SeedStep({ file, onSeedSet }: Props) {
     if (ready) redraw(barPoint, plateTop, plateBot);
   }, [barPoint, plateTop, plateBot, ready, diameter, redraw]);
 
-  // ── Confirm position ──────────────────────────────────────────────────────
+  // ── Confirm current crosshair position ────────────────────────────────────
   const handleConfirmPosition = () => {
-    const pt = getCrosshairVideoPoint();
-    if (!pt) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const rect   = canvas.getBoundingClientRect();
+    const scaleX = videoDims.w / rect.width;
+    const scaleY = videoDims.h / rect.height;
+
+    /**
+     * Convert directly here rather than via getCrosshairVideoPoint()
+     * so we can log intermediate values clearly.
+     */
+    const pt: Point = {
+      x: Math.max(0, Math.min(videoDims.w, (crosshairClient.x - rect.left) * scaleX)),
+      y: Math.max(0, Math.min(videoDims.h, (crosshairClient.y - rect.top)  * scaleY)),
+    };
+
+    console.log("Confirm position:", {
+      crosshairClient,
+      canvasRect: { left: rect.left, top: rect.top, w: rect.width, h: rect.height },
+      videoDims,
+      scaleX,
+      scaleY,
+      resultPoint: pt,
+    });
 
     if (step === "bar") {
       setBarPoint(pt);
@@ -259,7 +283,6 @@ export default function SeedStep({ file, onSeedSet }: Props) {
       setStep("done");
     }
 
-    // Re-centre crosshair for next step
     centreCrosshair();
   };
 
@@ -278,19 +301,28 @@ export default function SeedStep({ file, onSeedSet }: Props) {
     const pixelDiameter = Math.abs(plateBot.y - plateTop.y);
     const pxPerCm       = pixelDiameter / diameter;
     const pxPerM        = pxPerCm * 100;
+
+    console.log("Submitting seed:", {
+      barPoint,
+      plateTop,
+      plateBot,
+      pixelDiameter,
+      pxPerCm,
+      pxPerM,
+    });
+
     onSeedSet(barPoint, {
       top: plateTop, bottom: plateBot,
       diameterCm: diameter, pxPerCm, pxPerM,
     });
   };
 
-  const config = STEP_CONFIG[step];
-
+  const config        = STEP_CONFIG[step];
   const pixelDiameter = plateTop && plateBot
     ? Math.round(Math.abs(plateBot.y - plateTop.y))
     : null;
 
-  // Position of crosshair relative to the container div
+  // Crosshair position relative to the container div for CSS positioning
   const containerRect = containerRef.current?.getBoundingClientRect();
   const crosshairRelX = containerRect ? crosshairClient.x - containerRect.left : 0;
   const crosshairRelY = containerRect ? crosshairClient.y - containerRect.top  : 0;
@@ -388,7 +420,6 @@ export default function SeedStep({ file, onSeedSet }: Props) {
                 background:  config.colour + "22",
               }}
             >
-              {/* Centre dot */}
               <div
                 className="w-1.5 h-1.5 rounded-full"
                 style={{ background: config.colour }}
