@@ -101,7 +101,7 @@ export default function ResultsStep({
           />
         )}
         {view === "playback" && (
-          <VideoPlayback file={file} result={result} />
+          <VideoPlayback file={file} result={result} vFrames={vFrames} />
         )}
       </div>
 

@@ -1,38 +1,94 @@
 "use client";
 
-import { useCallback, useRef } from "react";
-import type { AnalysisResult, Point } from "@/types";
+import { useCallback } from "react";
+import type { AnalysisResult, VelocityFrame } from "@/types";
 
-export function useCanvasOverlay(result: AnalysisResult | null) {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+const COLOURS = {
+  concentric: "#f97316",  // orange
+  eccentric:  "#3b82f6",  // blue
+  rest:       "#6b7280",  // grey
+  dot:        "#ffffff",  // white centre dot
+} as const;
 
+/** Find the VelocityFrame closest to a given time */
+function findClosestVFrame(
+  vFrames: VelocityFrame[],
+  timeSeconds: number
+): VelocityFrame | null {
+  if (!vFrames.length) return null;
+  let closest = vFrames[0];
+  let minDiff = Infinity;
+  for (const f of vFrames) {
+    const diff = Math.abs(f.timeSeconds - timeSeconds);
+    if (diff < minDiff) { minDiff = diff; closest = f; }
+  }
+  return closest;
+}
+
+/** Phase colour for a given time */
+function phaseColour(vFrames: VelocityFrame[], timeSeconds: number): string {
+  const f = findClosestVFrame(vFrames, timeSeconds);
+  if (!f || f.repIndex === null) return COLOURS.rest;
+  return f.phase === "concentric" ? COLOURS.concentric
+       : f.phase === "eccentric"  ? COLOURS.eccentric
+       : COLOURS.rest;
+}
+
+export function useCanvasOverlay(
+  result:  AnalysisResult,
+  vFrames: VelocityFrame[] = []
+) {
   const draw = useCallback(
     (canvas: HTMLCanvasElement, currentTime: number) => {
-      if (!result) return;
-      canvasRef.current = canvas;
-
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
 
-      const scaleX = canvas.width / result.videoWidth;
+      const scaleX = canvas.width  / result.videoWidth;
       const scaleY = canvas.height / result.videoHeight;
 
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      // Draw full bar path (faint)
-      if (result.frames.length > 1) {
+      if (result.frames.length < 2) return;
+
+      // ── Full bar path — draw as coloured segments ─────────────────────────
+      for (let i = 1; i < result.frames.length; i++) {
+        const prev = result.frames[i - 1];
+        const curr = result.frames[i];
+
+        const colour = phaseColour(vFrames, curr.timeSeconds);
+
         ctx.beginPath();
-        ctx.strokeStyle = "rgba(249,115,22,0.4)";
-        ctx.lineWidth = 2;
-        const first = result.frames[0].position;
-        ctx.moveTo(first.x * scaleX, first.y * scaleY);
-        for (const f of result.frames) {
-          ctx.lineTo(f.position.x * scaleX, f.position.y * scaleY);
-        }
+        ctx.strokeStyle = colour;
+        ctx.globalAlpha = 0.35;
+        ctx.lineWidth   = 2;
+        ctx.moveTo(prev.position.x * scaleX, prev.position.y * scaleY);
+        ctx.lineTo(curr.position.x * scaleX, curr.position.y * scaleY);
         ctx.stroke();
       }
 
-      // Find closest frame to currentTime
+      ctx.globalAlpha = 1;
+
+      // ── Traced path up to current time — brighter ─────────────────────────
+      const pastFrames = result.frames.filter(
+        (f) => f.timeSeconds <= currentTime + 0.001
+      );
+
+      if (pastFrames.length > 1) {
+        for (let i = 1; i < pastFrames.length; i++) {
+          const prev   = pastFrames[i - 1];
+          const curr   = pastFrames[i];
+          const colour = phaseColour(vFrames, curr.timeSeconds);
+
+          ctx.beginPath();
+          ctx.strokeStyle = colour;
+          ctx.lineWidth   = 3;
+          ctx.moveTo(prev.position.x * scaleX, prev.position.y * scaleY);
+          ctx.lineTo(curr.position.x * scaleX, curr.position.y * scaleY);
+          ctx.stroke();
+        }
+      }
+
+      // ── Current position dot ──────────────────────────────────────────────
       let closest = result.frames[0];
       let minDiff = Infinity;
       for (const f of result.frames) {
@@ -40,39 +96,23 @@ export function useCanvasOverlay(result: AnalysisResult | null) {
         if (diff < minDiff) { minDiff = diff; closest = f; }
       }
 
-      // Draw traced path up to current time (bright)
-      const pastFrames = result.frames.filter(
-        (f) => f.timeSeconds <= currentTime + 0.001
-      );
-      if (pastFrames.length > 1) {
-        ctx.beginPath();
-        ctx.strokeStyle = "#f97316";
-        ctx.lineWidth = 3;
-        ctx.moveTo(pastFrames[0].position.x * scaleX, pastFrames[0].position.y * scaleY);
-        for (const f of pastFrames) {
-          ctx.lineTo(f.position.x * scaleX, f.position.y * scaleY);
-        }
-        ctx.stroke();
-      }
-
-      // Draw current position dot
       const cx = closest.position.x * scaleX;
       const cy = closest.position.y * scaleY;
+      const dotColour = phaseColour(vFrames, closest.timeSeconds);
+
+      // Outer coloured ring
       ctx.beginPath();
       ctx.arc(cx, cy, 8, 0, Math.PI * 2);
-      ctx.fillStyle = "#f97316";
+      ctx.fillStyle   = dotColour;
       ctx.fill();
-      ctx.strokeStyle = "#fff";
-      ctx.lineWidth = 2;
-      ctx.stroke();
 
-      // White centre dot
+      // White centre
       ctx.beginPath();
       ctx.arc(cx, cy, 3, 0, Math.PI * 2);
-      ctx.fillStyle = "#fff";
+      ctx.fillStyle = COLOURS.dot;
       ctx.fill();
     },
-    [result]
+    [result, vFrames]
   );
 
   return { draw };

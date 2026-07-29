@@ -1,15 +1,16 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { AnalysisResult } from "@/types";
+import type { AnalysisResult, VelocityFrame } from "@/types";
 import { useCanvasOverlay } from "@/hooks/useCanvasOverlay";
 
 interface Props {
   file: File;
   result: AnalysisResult;
+  vFrames: VelocityFrame[];
 }
 
-export default function VideoPlayback({ file, result }: Props) {
+export default function VideoPlayback({ file, result, vFrames }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animRef = useRef<number>(0);
@@ -19,7 +20,7 @@ export default function VideoPlayback({ file, result }: Props) {
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const { draw } = useCanvasOverlay(result);
+  const { draw } = useCanvasOverlay(result, vFrames);
 
   // ── Set video source ───────────────────────────────────────────────────────
   useEffect(() => {
