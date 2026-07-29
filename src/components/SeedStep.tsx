@@ -12,17 +12,17 @@ type ClickStep = "bar" | "plateTop" | "plateBottom" | "done";
 
 const STEP_CONFIG: Record<ClickStep, { label: string; colour: string; hint: string }> = {
   bar: {
-    label:  "Step 1 of 3 — Tap the centre of the barbell",
+    label:  "Step 1 of 3 — Tap the centre of the weights",
     colour: "#f97316",
-    hint:   "Tap exactly on the middle of the bar (the steel shaft, not the plate)",
+    hint:   "Tap close to the collar or bar for best results",
   },
   plateTop: {
-    label:  "Step 2 of 3 — Tap the very top edge of the plate",
+    label:  "Step 2 of 3 (Calibration) — Tap the very top edge of the plate",
     colour: "#3b82f6",
-    hint:   "Tap the highest point of the weight plate visible in the frame",
+    hint:   "Tap the highest point of the weight plate",
   },
   plateBottom: {
-    label:  "Step 3 of 3 — Tap the very bottom edge of the plate",
+    label:  "Step 3 of 3 (Calibration) — Tap the very bottom edge of the plate",
     colour: "#3b82f6",
     hint:   "Tap the lowest point of the same weight plate",
   },
