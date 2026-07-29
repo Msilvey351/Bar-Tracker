@@ -33,44 +33,24 @@ const STEP_CONFIG: Record<ClickStep, { label: string; colour: string; hint: stri
   },
 };
 
-/** Convert viewport CSS-pixel position to video pixel coords */
-function cssToVideo(
-  clientX:   number,
-  clientY:   number,
-  canvas:    HTMLCanvasElement,
-  videoDims: { w: number; h: number }
-): Point {
-  const rect   = canvas.getBoundingClientRect();
-  const scaleX = videoDims.w / rect.width;
-  const scaleY = videoDims.h / rect.height;
-  return {
-    x: Math.max(0, Math.min(videoDims.w, (clientX - rect.left) * scaleX)),
-    y: Math.max(0, Math.min(videoDims.h, (clientY - rect.top)  * scaleY)),
-  };
-}
-
 export default function SeedStep({ file, onSeedSet }: Props) {
   const videoRef     = useRef<HTMLVideoElement>(null);
-  const canvasRef    = useRef<HTMLCanvasElement>(null);
+  const overlayRef   = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const [ready,      setReady]      = useState(false);
-  const [videoDims,  setVideoDims]  = useState({ w: 1, h: 1 });
-  const [step,       setStep]       = useState<ClickStep>("bar");
-  const [barPoint,   setBarPoint]   = useState<Point | null>(null);
-  const [plateTop,   setPlateTop]   = useState<Point | null>(null);
-  const [plateBot,   setPlateBot]   = useState<Point | null>(null);
-  const [diameter,   setDiameter]   = useState<number>(45);
+  const [ready,     setReady]     = useState(false);
+  const [videoDims, setVideoDims] = useState({ w: 1, h: 1 });
+  const [step,      setStep]      = useState<ClickStep>("bar");
+  const [barPoint,  setBarPoint]  = useState<Point | null>(null);
+  const [plateTop,  setPlateTop]  = useState<Point | null>(null);
+  const [plateBot,  setPlateBot]  = useState<Point | null>(null);
+  const [diameter,  setDiameter]  = useState<number>(45);
 
-  /**
-   * Crosshair position in CLIENT (viewport) pixels.
-   * This is the raw clientX/Y from mouse or touch events.
-   * cssToVideo() converts this to video pixel coords when needed.
-   */
+  // Crosshair in CLIENT (viewport) pixels
   const [crosshairClient, setCrosshairClient] = useState({ x: 0, y: 0 });
   const draggingRef = useRef(false);
 
-  // ── Load first frame ───────────────────────────────────────────────────────
+  // ── Load video and show first frame ───────────────────────────────────────
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
@@ -83,13 +63,7 @@ export default function SeedStep({ file, onSeedSet }: Props) {
 
     const onMeta   = () => { video.currentTime = 0; };
     const onSeeked = () => {
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      canvas.width  = video.videoWidth;
-      canvas.height = video.videoHeight;
       setVideoDims({ w: video.videoWidth, h: video.videoHeight });
-      const ctx = canvas.getContext("2d");
-      ctx?.drawImage(video, 0, 0);
       setReady(true);
     };
 
@@ -104,29 +78,28 @@ export default function SeedStep({ file, onSeedSet }: Props) {
     };
   }, [file]);
 
-  // ── Centre crosshair on canvas centre ────────────────────────────────────
+  // ── Centre crosshair on the video element itself ──────────────────────────
   const centreCrosshair = useCallback(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    // Use a small delay to ensure the canvas has finished layout
     setTimeout(() => {
-      const rect = canvas.getBoundingClientRect();
+      const video = videoRef.current;
+      if (!video) return;
+      const rect = video.getBoundingClientRect();
       setCrosshairClient({
         x: rect.left + rect.width  / 2,
         y: rect.top  + rect.height / 2,
       });
-    }, 50);
+    }, 60);
   }, []);
 
   useEffect(() => {
     if (ready) centreCrosshair();
   }, [ready, centreCrosshair]);
 
-  // ── Clamp client position to canvas bounds ────────────────────────────────
-  const clampToCanvas = useCallback((clientX: number, clientY: number) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return { x: clientX, y: clientY };
-    const rect = canvas.getBoundingClientRect();
+  // ── Clamp to video element bounds ─────────────────────────────────────────
+  const clampToVideo = useCallback((clientX: number, clientY: number) => {
+    const video = videoRef.current;
+    if (!video) return { x: clientX, y: clientY };
+    const rect = video.getBoundingClientRect();
     return {
       x: Math.max(rect.left, Math.min(rect.right,  clientX)),
       y: Math.max(rect.top,  Math.min(rect.bottom, clientY)),
@@ -142,17 +115,16 @@ export default function SeedStep({ file, onSeedSet }: Props) {
   useEffect(() => {
     const onMouseMove = (e: MouseEvent) => {
       if (!draggingRef.current) return;
-      setCrosshairClient(clampToCanvas(e.clientX, e.clientY));
+      setCrosshairClient(clampToVideo(e.clientX, e.clientY));
     };
     const onMouseUp = () => { draggingRef.current = false; };
-
     window.addEventListener("mousemove", onMouseMove);
     window.addEventListener("mouseup",   onMouseUp);
     return () => {
       window.removeEventListener("mousemove", onMouseMove);
       window.removeEventListener("mouseup",   onMouseUp);
     };
-  }, [clampToCanvas]);
+  }, [clampToVideo]);
 
   // ── Touch drag ────────────────────────────────────────────────────────────
   const onTouchStartCrosshair = (e: React.TouchEvent) => {
@@ -165,42 +137,60 @@ export default function SeedStep({ file, onSeedSet }: Props) {
       if (!draggingRef.current) return;
       e.preventDefault();
       const t = e.touches[0];
-      setCrosshairClient(clampToCanvas(t.clientX, t.clientY));
+      setCrosshairClient(clampToVideo(t.clientX, t.clientY));
     };
     const onTouchEnd = () => { draggingRef.current = false; };
-
     window.addEventListener("touchmove", onTouchMove, { passive: false });
     window.addEventListener("touchend",  onTouchEnd);
     return () => {
       window.removeEventListener("touchmove", onTouchMove);
       window.removeEventListener("touchend",  onTouchEnd);
     };
-  }, [clampToCanvas]);
+  }, [clampToVideo]);
 
-  // ── Convert crosshair position to video pixel coords ─────────────────────
-  const getCrosshairVideoPoint = useCallback((): Point | null => {
-    const canvas = canvasRef.current;
-    if (!canvas) return null;
-    return cssToVideo(crosshairClient.x, crosshairClient.y, canvas, videoDims);
+  /**
+   * Convert crosshair CLIENT position → VIDEO pixel coordinates.
+   *
+   * We use the VIDEO element's bounding rect (not canvas),
+   * because the video element correctly letterboxes/pillarboxes
+   * and getBoundingClientRect() gives us the actual displayed area.
+   *
+   * video.videoWidth/Height = native resolution
+   * rect.width/height       = displayed CSS size
+   */
+  const getCrosshairVideoPoint = useCallback((): Point => {
+    const video = videoRef.current!;
+    const rect  = video.getBoundingClientRect();
+    const scaleX = videoDims.w / rect.width;
+    const scaleY = videoDims.h / rect.height;
+    return {
+      x: Math.max(0, Math.min(videoDims.w, (crosshairClient.x - rect.left) * scaleX)),
+      y: Math.max(0, Math.min(videoDims.h, (crosshairClient.y - rect.top)  * scaleY)),
+    };
   }, [crosshairClient, videoDims]);
 
-  // ── Redraw canvas with placed markers ────────────────────────────────────
-  const redraw = useCallback((
+  // ── Draw confirmed markers on overlay canvas ──────────────────────────────
+  const redrawOverlay = useCallback((
     bar: Point | null,
     top: Point | null,
     bot: Point | null
   ) => {
-    const canvas = canvasRef.current;
+    const canvas = overlayRef.current;
     const video  = videoRef.current;
     if (!canvas || !video) return;
+
+    // Match overlay canvas to video native resolution
+    canvas.width  = videoDims.w;
+    canvas.height = videoDims.h;
+
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    ctx.drawImage(video, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
 
     if (top && bot) {
       ctx.strokeStyle = "#3b82f6";
-      ctx.lineWidth   = 2;
+      ctx.lineWidth   = Math.max(2, videoDims.w / 400);
       ctx.setLineDash([6, 4]);
       ctx.beginPath();
       ctx.moveTo(top.x, top.y);
@@ -208,69 +198,48 @@ export default function SeedStep({ file, onSeedSet }: Props) {
       ctx.stroke();
       ctx.setLineDash([]);
       ctx.fillStyle = "#3b82f6";
-      ctx.font      = "bold 14px monospace";
-      ctx.fillText(`${diameter} cm`, (top.x + bot.x) / 2 + 12, (top.y + bot.y) / 2);
+      ctx.font      = `bold ${Math.max(14, videoDims.w / 80)}px monospace`;
+      ctx.fillText(`${diameter} cm`, (top.x + bot.x) / 2 + 16, (top.y + bot.y) / 2);
     }
 
-    if (top) drawMarker(ctx, top, "#3b82f6", "TOP");
-    if (bot) drawMarker(ctx, bot, "#3b82f6", "BOT");
-    if (bar) drawMarker(ctx, bar, "#f97316", "BAR");
-  }, [diameter]);
+    const r = Math.max(12, videoDims.w / 80);
+    if (top) drawMarker(ctx, top, "#3b82f6", "TOP", r);
+    if (bot) drawMarker(ctx, bot, "#3b82f6", "BOT", r);
+    if (bar) drawMarker(ctx, bar, "#f97316", "BAR", r);
+  }, [videoDims, diameter]);
 
   function drawMarker(
     ctx:    CanvasRenderingContext2D,
     pt:     Point,
     colour: string,
-    label:  string
+    label:  string,
+    r:      number
   ) {
     ctx.beginPath();
-    ctx.arc(pt.x, pt.y, 12, 0, Math.PI * 2);
+    ctx.arc(pt.x, pt.y, r, 0, Math.PI * 2);
     ctx.strokeStyle = colour;
-    ctx.lineWidth   = 3;
+    ctx.lineWidth   = Math.max(2, r / 5);
     ctx.stroke();
     ctx.beginPath();
-    ctx.arc(pt.x, pt.y, 3, 0, Math.PI * 2);
+    ctx.arc(pt.x, pt.y, r * 0.25, 0, Math.PI * 2);
     ctx.fillStyle = "#fff";
     ctx.fill();
     ctx.strokeStyle = colour;
-    ctx.lineWidth   = 1.5;
-    ctx.beginPath(); ctx.moveTo(pt.x - 20, pt.y); ctx.lineTo(pt.x + 20, pt.y); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(pt.x, pt.y - 20); ctx.lineTo(pt.x, pt.y + 20); ctx.stroke();
+    ctx.lineWidth   = Math.max(1.5, r / 8);
+    ctx.beginPath(); ctx.moveTo(pt.x - r * 1.6, pt.y); ctx.lineTo(pt.x + r * 1.6, pt.y); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(pt.x, pt.y - r * 1.6); ctx.lineTo(pt.x, pt.y + r * 1.6); ctx.stroke();
     ctx.fillStyle = colour;
-    ctx.font      = "bold 12px monospace";
-    ctx.fillText(label, pt.x + 16, pt.y - 8);
+    ctx.font      = `bold ${Math.max(12, r)}px monospace`;
+    ctx.fillText(label, pt.x + r + 4, pt.y - r * 0.5);
   }
 
   useEffect(() => {
-    if (ready) redraw(barPoint, plateTop, plateBot);
-  }, [barPoint, plateTop, plateBot, ready, diameter, redraw]);
+    if (ready) redrawOverlay(barPoint, plateTop, plateBot);
+  }, [barPoint, plateTop, plateBot, ready, diameter, redrawOverlay]);
 
-  // ── Confirm current crosshair position ────────────────────────────────────
+  // ── Confirm position ──────────────────────────────────────────────────────
   const handleConfirmPosition = () => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const rect   = canvas.getBoundingClientRect();
-    const scaleX = videoDims.w / rect.width;
-    const scaleY = videoDims.h / rect.height;
-
-    /**
-     * Convert directly here rather than via getCrosshairVideoPoint()
-     * so we can log intermediate values clearly.
-     */
-    const pt: Point = {
-      x: Math.max(0, Math.min(videoDims.w, (crosshairClient.x - rect.left) * scaleX)),
-      y: Math.max(0, Math.min(videoDims.h, (crosshairClient.y - rect.top)  * scaleY)),
-    };
-
-    console.log("Confirm position:", {
-      crosshairClient,
-      canvasRect: { left: rect.left, top: rect.top, w: rect.width, h: rect.height },
-      videoDims,
-      scaleX,
-      scaleY,
-      resultPoint: pt,
-    });
+    const pt = getCrosshairVideoPoint();
 
     if (step === "bar") {
       setBarPoint(pt);
@@ -286,7 +255,6 @@ export default function SeedStep({ file, onSeedSet }: Props) {
     centreCrosshair();
   };
 
-  // ── Reset ─────────────────────────────────────────────────────────────────
   const reset = () => {
     setBarPoint(null);
     setPlateTop(null);
@@ -295,22 +263,11 @@ export default function SeedStep({ file, onSeedSet }: Props) {
     centreCrosshair();
   };
 
-  // ── Submit ────────────────────────────────────────────────────────────────
   const handleSubmit = () => {
     if (!barPoint || !plateTop || !plateBot) return;
     const pixelDiameter = Math.abs(plateBot.y - plateTop.y);
     const pxPerCm       = pixelDiameter / diameter;
     const pxPerM        = pxPerCm * 100;
-
-    console.log("Submitting seed:", {
-      barPoint,
-      plateTop,
-      plateBot,
-      pixelDiameter,
-      pxPerCm,
-      pxPerM,
-    });
-
     onSeedSet(barPoint, {
       top: plateTop, bottom: plateBot,
       diameterCm: diameter, pxPerCm, pxPerM,
@@ -322,7 +279,7 @@ export default function SeedStep({ file, onSeedSet }: Props) {
     ? Math.round(Math.abs(plateBot.y - plateTop.y))
     : null;
 
-  // Crosshair position relative to the container div for CSS positioning
+  // Crosshair position relative to the container
   const containerRect = containerRef.current?.getBoundingClientRect();
   const crosshairRelX = containerRect ? crosshairClient.x - containerRect.left : 0;
   const crosshairRelY = containerRect ? crosshairClient.y - containerRect.top  : 0;
@@ -334,7 +291,7 @@ export default function SeedStep({ file, onSeedSet }: Props) {
       <div className="text-center">
         <h2 className="text-2xl font-bold">Set Tracking Points</h2>
         <p className="text-white/40 text-sm mt-1">
-          Drag the crosshair, then tap Confirm — 3 points total
+          Drag the crosshair · tap Confirm — 3 points total
         </p>
       </div>
 
@@ -378,22 +335,39 @@ export default function SeedStep({ file, onSeedSet }: Props) {
         )}
       </div>
 
-      {/* Canvas + crosshair container */}
+      {/* Video + overlay container */}
       <div
         ref={containerRef}
         className="relative w-full max-w-3xl rounded-xl overflow-hidden border border-white/10 bg-black select-none"
       >
-        <video ref={videoRef} className="hidden" playsInline muted />
-
         {!ready && (
           <div className="h-64 flex items-center justify-center text-white/40 text-sm">
             Loading first frame…
           </div>
         )}
 
+        {/*
+          Video element shows the first frame.
+          object-contain ensures it letterboxes/pillarboxes correctly.
+          Its getBoundingClientRect() gives us the true displayed area.
+        */}
+        <video
+          ref={videoRef}
+          playsInline
+          muted
+          className="w-full block"
+          style={{ display: ready ? "block" : "none" }}
+        />
+
+        {/*
+          Overlay canvas for confirmed marker drawings.
+          Positioned absolutely over the video, matching its exact size.
+          pointer-events: none so it doesn't block crosshair dragging.
+        */}
         <canvas
-          ref={canvasRef}
-          className={`w-full ${ready ? "block" : "hidden"}`}
+          ref={overlayRef}
+          className="absolute inset-0 w-full h-full"
+          style={{ pointerEvents: "none" }}
         />
 
         {/* Draggable crosshair */}
@@ -420,19 +394,14 @@ export default function SeedStep({ file, onSeedSet }: Props) {
                 background:  config.colour + "22",
               }}
             >
-              <div
-                className="w-1.5 h-1.5 rounded-full"
-                style={{ background: config.colour }}
-              />
+              <div className="w-1.5 h-1.5 rounded-full" style={{ background: config.colour }} />
             </div>
 
-            {/* Horizontal arms */}
+            {/* Arms */}
             <div className="absolute top-1/2 -translate-y-1/2"
               style={{ left: -16, width: 16, height: 2, background: config.colour }} />
             <div className="absolute top-1/2 -translate-y-1/2"
               style={{ right: -16, width: 16, height: 2, background: config.colour }} />
-
-            {/* Vertical arms */}
             <div className="absolute left-1/2 -translate-x-1/2"
               style={{ top: -16, width: 2, height: 16, background: config.colour }} />
             <div className="absolute left-1/2 -translate-x-1/2"
@@ -455,8 +424,8 @@ export default function SeedStep({ file, onSeedSet }: Props) {
           style={{ background: config.colour }}
         >
           ✓ Confirm {
-            step === "bar"         ? "Bar Position"  :
-            step === "plateTop"    ? "Plate Top"     :
+            step === "bar"         ? "Bar Position" :
+            step === "plateTop"    ? "Plate Top"    :
                                      "Plate Bottom"
           }
         </button>
