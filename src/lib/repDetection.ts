@@ -19,10 +19,7 @@ const SPEED_SMOOTH_WINDOW        = 3;
 const VY_SMOOTH_WINDOW           = 6;
 const SPEED_SMOOTH_TIME_S = 0.01;
 const VY_SMOOTH_TIME_S    = 0.02; 
-/**
- * Lowered from 0.07 → 0.04 so more frames near the zero crossing
- * get a direction assigned, allowing velocity lines to reach zero.
- */
+
 const MOVING_FRACTION            = 0.04;
 const DIRECTION_FRACTION         = 0.06;
 const MAX_REST_GAP_FRAMES        = 5;
