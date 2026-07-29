@@ -197,14 +197,6 @@ export default function AnalysisStep({
         </div>
       )}
 
-      {/* Placeholder before chart has data */}
-      {!error && !showChart && (
-        <div className="w-full max-w-3xl h-48 bg-white/5 border border-white/10 rounded-xl flex items-center justify-center">
-          <p className="text-white/20 text-sm">
-            Chart will appear as frames are tracked…
-          </p>
-        </div>
-      )}
 
     </div>
   );

@@ -38,7 +38,7 @@ export default function HowItWorksModal({ onClose }: Props) {
             <div>
               <p className="font-semibold text-white mb-1">Upload your video</p>
               <p>
-                Film from the side so the bar travels vertically in frame.
+                Film your lift so that the weight plates are entirely in frame. Side angles work best. 
                 Upload any MP4, MOV or WebM video — any length.
               </p>
             </div>
@@ -58,7 +58,7 @@ export default function HowItWorksModal({ onClose }: Props) {
                 <li className="flex gap-2">
                   <span className="text-orange-400 font-bold shrink-0">Tap 1 —</span>
                   <span>
-                    Tap the <span className="text-white">end of the barbell sleeve</span> (the steel shaft, not the plate).
+                    Tap the <span className="text-white">middle of the plates</span> (close to the collar/shaft).
                     This is the point the app will track throughout the video.
                   </span>
                 </li>
