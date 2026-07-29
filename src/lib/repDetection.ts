@@ -758,11 +758,11 @@ export function computeRepStats(vFrames: VelocityFrame[]): RepStats[] {
   stats.sort((a, b) => a.repNumber - b.repNumber);
   stats.forEach((s, i) => { s.repNumber = i + 1; });
 
-  const rep1Peak = stats[0]?.peakConcentricVelocity ?? 1;
+  const rep1Avg = stats[0]?.avgConcentricVelocity ?? 1;
   for (const s of stats) {
     s.percentSpeedDrop =
-      rep1Peak > 0
-        ? ((rep1Peak - s.peakConcentricVelocity) / rep1Peak) * 100
+      rep1Avg > 0
+        ? ((rep1Avg - s.avgConcentricVelocity) / rep1Avg) * 100
         : 0;
   }
 

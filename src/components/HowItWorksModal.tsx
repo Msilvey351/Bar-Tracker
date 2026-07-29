@@ -79,7 +79,7 @@ export default function HowItWorksModal({ onClose }: Props) {
                 <p className="text-white/50 text-xs leading-relaxed">
                   <span className="text-emerald-400 font-semibold">📏 Why tap the plate?</span>
                   {" "}Taps 2 and 3 measure how many pixels tall the plate is in your video.
-                  Since a standard Olympic plate is <span className="text-white">45 cm</span> in diameter,
+                  Since a standard calibrated weight plate is <span className="text-white">45 cm</span> in diameter,
                   this gives us a precise pixel-to-metre conversion — so all speeds are shown in
                   real-world <span className="text-white">m/s</span>, not arbitrary pixels.
                 </p>
