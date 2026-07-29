@@ -7,7 +7,6 @@ import {
   isWebCodecsSupported,
   probeVideo,
   decodeVideoFrames,
-  type DecodedVideoFrame
 } from "@/lib/webcodecs";
 
 interface UseVideoAnalyserReturn {
@@ -65,69 +64,6 @@ function smoothPositions(frames: FrameResult[]): FrameResult[] {
       },
     };
   });
-}
-
-/**
- * Copy a VideoFrame to an ImageData at a scaled resolution.
- *
- * Uses VideoFrame.copyTo() which copies raw pixels directly
- * without going through canvas colour space conversion.
- * This produces the same pixel values as the seek path
- * (HTMLVideoElement drawn to canvas), avoiding the drift
- * that occurred when using ctx.drawImage(VideoFrame).
- *
- * Falls back to canvas drawImage if copyTo fails.
- */
-/**
- * Copy a VideoFrame to an ImageData at a scaled resolution.
- *
- * Uses VideoFrame.copyTo() which copies raw pixels directly
- * without going through canvas colour space conversion.
- * Falls back to canvas drawImage if copyTo fails.
- */
-async function videoFrameToImageData(
-  frame:    DecodedVideoFrame,
-  width:    number,
-  height:   number,
-  canvas:   HTMLCanvasElement,
-  ctx:      CanvasRenderingContext2D,
-  rawFrame: VideoFrame | null
-): Promise<ImageData> {
-  /**
-   * Try copyTo() on the raw VideoFrame if we have it.
-   * This avoids colour space conversion that ctx.drawImage applies.
-   */
-  if (rawFrame) {
-    try {
-      const buffer = new Uint8Array(width * height * 4);
-
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      await (rawFrame as any).copyTo(buffer, {
-        format: "RGBA",
-        rect: {
-          x:      0,
-          y:      0,
-          width:  rawFrame.codedWidth,
-          height: rawFrame.codedHeight,
-        },
-        layout: [{ offset: 0, stride: width * 4 }],
-      });
-
-      return new ImageData(
-        new Uint8ClampedArray(buffer.buffer),
-        width,
-        height
-      );
-    } catch (e) {
-      console.warn("VideoFrame.copyTo() failed, using canvas fallback:", String(e));
-    }
-  }
-
-  // Canvas fallback
-  canvas.width  = width;
-  canvas.height = height;
-  frame.draw(ctx, width, height);
-  return ctx.getImageData(0, 0, width, height);
 }
 
 export function useVideoAnalyser(): UseVideoAnalyserReturn {
@@ -511,11 +447,6 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
 
         let analysisResult: AnalysisResult;
 
-        /**
-         * WebCodecs path: faster, no seek overhead.
-         * Now uses VideoFrame.copyTo() for pixel capture to avoid
-         * colour space conversion differences vs seek path.
-         */
         if (isWebCodecsSupported()) {
           try {
             analysisResult = await analyseWithWebCodecs(file, seed, canvas);
