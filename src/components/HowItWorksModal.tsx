@@ -1,5 +1,7 @@
 "use client";
 
+import Image from "next/image";
+
 interface Props {
   onClose: () => void;
 }
@@ -28,6 +30,27 @@ export default function HowItWorksModal({ onClose }: Props) {
           </button>
         </div>
 
+        {/* 
+          ── Diagram image ──────────────────────────────────────────────────────
+          Drop your image into public/ e.g. public/how-it-works.jpg
+          then it is available at /how-it-works.jpg
+        */}
+        <figure className="mb-5 rounded-xl overflow-hidden border border-white/10">
+          <div className="relative w-full" style={{ aspectRatio: "16/9" }}>
+            <Image
+              src="/how-it-works.jpg"
+              alt="Diagram showing crosshair placement: tap 1 on bar end, tap 2 on plate top, tap 3 on plate bottom"
+              fill
+              className="object-cover"
+              sizes="(max-width: 512px) 100vw, 512px"
+              priority
+            />
+          </div>
+          <figcaption className="text-center text-xs text-white/30 py-2 bg-white/5">
+            🟠 Tap 1 — bar end &nbsp;·&nbsp; 🔵 Tap 2 — plate top &nbsp;·&nbsp; 🔵 Tap 3 — plate bottom
+          </figcaption>
+        </figure>
+
         <div className="flex flex-col gap-5 text-sm text-white/70 leading-relaxed">
 
           {/* Step 1 */}
@@ -38,7 +61,7 @@ export default function HowItWorksModal({ onClose }: Props) {
             <div>
               <p className="font-semibold text-white mb-1">Upload your video</p>
               <p>
-                Film your lift so that the weight plates are entirely in frame. Side angles work best. 
+                Film your lift so that the weight plates are entirely in frame. Side angles work best.
                 Upload any MP4, MOV or WebM video — any length.
               </p>
             </div>
@@ -52,7 +75,7 @@ export default function HowItWorksModal({ onClose }: Props) {
             <div>
               <p className="font-semibold text-white mb-1">Mark the bar and calibrate</p>
               <p className="mb-2">
-                You will make <span className="text-white font-medium">three taps</span> on the first frame of your video:
+                You will make <span className="text-white font-medium">three selections</span> on the first frame of your video:
               </p>
               <ul className="flex flex-col gap-2 ml-1">
                 <li className="flex gap-2">
@@ -141,9 +164,11 @@ export default function HowItWorksModal({ onClose }: Props) {
                     <span className="text-white font-medium">Video playback</span> — watch the tracked
                     bar path overlaid on your original video.
                   </span>
-                  <span className="text-white font-medium"> If results seem wrong, try again and select a slightly different tracking point</span>
                 </li>
               </ul>
+              <p className="mt-2 text-white/40 text-xs">
+                💡 If results seem wrong, try again and select a slightly different tracking point.
+              </p>
             </div>
           </div>
 
