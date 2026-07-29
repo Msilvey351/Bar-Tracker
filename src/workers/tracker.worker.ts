@@ -41,7 +41,7 @@ const MIN_CONFIDENCE = 0.35;
  */
 const TEMPLATE_UPDATE_CONFIDENCE = 0.85;
 
-const MAX_PIXEL_JUMP = 35; // Allowed to jump further now because of pre-search
+const MAX_PIXEL_JUMP = 60; // Allowed to jump further now because of pre-search
 const EPSILON        = 0.01;
 let MAX_ITERATIONS   = 20;
 
@@ -90,29 +90,48 @@ function buildPatchTS(data: Uint8ClampedArray, width: number, height: number, cx
   }
 }
 
-function trackPointTS(data: Uint8ClampedArray, width: number, height: number, startX: number, startY: number): { x: number; y: number; confidence: number } {
+function trackPointTS(
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  startX: number,
+  startY: number
+): { x: number; y: number; confidence: number } {
   if (!tsPatchData || !tsIxData || !tsIyData) return { x: startX, y: startY, confidence: 0 };
   
   const r = PATCH_RADIUS;
 
-  // ─── 1. PRE-SEARCH (BLOCK MATCHING) ──────────────────────────────────────────
-  // Scans a grid around the last known point to catch fast movements that outrun LK
+  // ─── 1. WIDER PRE-SEARCH (BLOCK MATCHING) ──────────────────────────────────
+  // Scans a grid around the last known point to catch fast movements that outrun LK.
+  // Expanded to +/- 32 pixels. If the bar drops heavily, we will find it here first.
   let bestX = startX;
   let bestY = startY;
   let minSAD = Infinity;
 
-  // Search a +/- 16 pixel box in steps of 4 pixels
-  for (let sy = -16; sy <= 16; sy += 4) {
-    for (let sx = -16; sx <= 16; sx += 4) {
+  // Search a +/- 32 pixel box in steps of 4 pixels
+  for (let sy = -32; sy <= 32; sy += 4) {
+    for (let sx = -32; sx <= 32; sx += 4) {
+      
+      // Bounds check so we don't sample off screen
+      if (startX + sx < r || startY + sy < r || startX + sx >= width - r || startY + sy >= height - r) {
+        continue;
+      }
+
       let sad = 0;
       let i = 0;
-      for (let dy = -r; dy <= r; dy++) {
-        for (let dx = -r; dx <= r; dx++) {
+      
+      // We don't need to sample every pixel for the rough search. 
+      // Striding by 2 makes it 4x faster without losing accuracy.
+      for (let dy = -r; dy <= r; dy += 2) {
+        for (let dx = -r; dx <= r; dx += 2) {
           const val = sampleLumaTS(data, width, height, startX + sx + dx, startY + sy + dy);
-          sad += Math.abs(val - tsPatchData[i]);
+          // Find the corresponding index in the stored patch
+          const patchIdx = (dy + r) * (2 * r + 1) + (dx + r);
+          sad += Math.abs(val - tsPatchData[patchIdx]);
           i++;
         }
       }
+      
       if (sad < minSAD) {
         minSAD = sad;
         bestX = startX + sx;
