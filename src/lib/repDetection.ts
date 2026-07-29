@@ -15,9 +15,10 @@ export interface AnalyseRepOptions {
 
 // ─── Tuning ───────────────────────────────────────────────────────────────────
 
-const SPEED_SMOOTH_WINDOW        = 7;
-const VY_SMOOTH_WINDOW           = 11;
-
+const SPEED_SMOOTH_WINDOW        = 3;
+const VY_SMOOTH_WINDOW           = 6;
+const SPEED_SMOOTH_TIME_S = 0.05;
+const VY_SMOOTH_TIME_S    = 0.1; 
 /**
  * Lowered from 0.07 → 0.04 so more frames near the zero crossing
  * get a direction assigned, allowing velocity lines to reach zero.
@@ -118,43 +119,39 @@ export function buildVelocityFrames(
 ): VelocityFrame[] {
   if (frames.length < 2) return [];
 
-  const rawSpeed = [0];
-  const rawVY    = [0];
+  const dt = 1 / fps;
+
+  const rawSpeed: number[] = [0];
+  const rawVY: number[] = [0];
 
   for (let i = 1; i < frames.length; i++) {
     const dx = frames[i].position.x - frames[i - 1].position.x;
     const dy = frames[i].position.y - frames[i - 1].position.y;
 
-    /**
-     * Use actual timestamp difference instead of assumed 1/fps.
-     * This correctly handles WebCodecs frames which may not be
-     * evenly spaced, and seek-based frames which are.
-     */
-    const dt = 1/fps
-
-    if (dt <= 0) {
-      // Duplicate or out-of-order frame — use previous values
-      rawSpeed.push(rawSpeed[rawSpeed.length - 1]);
-      rawVY.push(rawVY[rawVY.length - 1]);
-      continue;
-    }
-
     rawSpeed.push(Math.sqrt(dx * dx + dy * dy) / dt);
     rawVY.push(dy / dt);
   }
 
-  const smoothSpeed = boxSmooth(rawSpeed, SPEED_SMOOTH_WINDOW);
-  const smoothVY    = boxSmooth(rawVY,    VY_SMOOTH_WINDOW);
+  // Calculate window sizes dynamically based on the actual FPS
+  // Ensure the window is always an odd number (required for boxSmooth center)
+  let speedWindow = Math.max(3, Math.round(SPEED_SMOOTH_TIME_S * fps));
+  if (speedWindow % 2 === 0) speedWindow++;
+
+  let vyWindow = Math.max(3, Math.round(VY_SMOOTH_TIME_S * fps));
+  if (vyWindow % 2 === 0) vyWindow++;
+
+  const smoothSpeed = boxSmooth(rawSpeed, speedWindow);
+  const smoothVY = boxSmooth(rawVY, vyWindow);
 
   return frames.map((f, i) => ({
-    frameIndex:       f.frameIndex,
-    timeSeconds:      f.timeSeconds,
-    position:         f.position,
-    velocityRaw:      rawSpeed[i],
+    frameIndex: f.frameIndex,
+    timeSeconds: f.timeSeconds,
+    position: f.position,
+    velocityRaw: rawSpeed[i],
     velocitySmoothed: smoothSpeed[i],
-    velocityY:        smoothVY[i],
-    phase:            "rest" as Phase,
-    repIndex:         null,
+    velocityY: smoothVY[i],
+    phase: "rest" as Phase,
+    repIndex: null,
   }));
 }
 
