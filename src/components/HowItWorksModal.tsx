@@ -58,27 +58,27 @@ export default function HowItWorksModal({ onClose }: Props) {
                 <li className="flex gap-2">
                   <span className="text-orange-400 font-bold shrink-0">Tap 1 —</span>
                   <span>
-                    Tap the <span className="text-white">middle of the plates</span> (close to the collar/shaft).
+                    Select the <span className="text-white">middle of the plates</span> (close to the collar/shaft).
                     This is the point the app will track throughout the video.
                   </span>
                 </li>
                 <li className="flex gap-2">
                   <span className="text-blue-400 font-bold shrink-0">Tap 2 —</span>
                   <span>
-                    Tap the <span className="text-white">very top edge</span> of the weight plate.
+                    Select the <span className="text-white">very top edge</span> of the weight plate.
                   </span>
                 </li>
                 <li className="flex gap-2">
                   <span className="text-blue-400 font-bold shrink-0">Tap 3 —</span>
                   <span>
-                    Tap the <span className="text-white">very bottom edge</span> of the same weight plate.
+                    Select the <span className="text-white">very bottom edge</span> of the same weight plate.
                   </span>
                 </li>
               </ul>
               <div className="mt-3 bg-white/5 border border-white/10 rounded-xl px-4 py-3">
                 <p className="text-white/50 text-xs leading-relaxed">
-                  <span className="text-emerald-400 font-semibold">📏 Why tap the plate?</span>
-                  {" "}Taps 2 and 3 measure how many pixels tall the plate is in your video.
+                  <span className="text-emerald-400 font-semibold">📏 Why select the plate?</span>
+                  {" "}Selections 2 and 3 measure how many pixels tall the plate is in your video.
                   Since a standard calibrated weight plate is <span className="text-white">45 cm</span> in diameter,
                   this gives us a precise pixel-to-metre conversion — so all speeds are shown in
                   real-world <span className="text-white">m/s</span>, not arbitrary pixels.
@@ -141,6 +141,7 @@ export default function HowItWorksModal({ onClose }: Props) {
                     <span className="text-white font-medium">Video playback</span> — watch the tracked
                     bar path overlaid on your original video.
                   </span>
+                  <span className="text-white font-medium"> If results seem wrong, try again and select a slightly different tracking point</span>
                 </li>
               </ul>
             </div>
