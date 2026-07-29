@@ -269,10 +269,19 @@ export default function SeedStep({ file, onSeedSet }: Props) {
     if (ready) redraw(barPoint, plateTop, plateBot);
   }, [barPoint, plateTop, plateBot, ready, diameter, redraw]);
 
-  // ── Confirm current crosshair position ────────────────────────────────────
   const handleConfirmPosition = () => {
     const pt = getCrosshairVideoPoint();
     if (!pt) return;
+
+    // Re-centre crosshair for the next step
+    const canvas = canvasRef.current;
+    if (canvas) {
+      const rect = canvas.getBoundingClientRect();
+      setCrosshairCss({
+        x: rect.left + rect.width  / 2,
+        y: rect.top  + rect.height / 2,
+      });
+    }
 
     if (step === "bar") {
       setBarPoint(pt);
@@ -409,8 +418,8 @@ export default function SeedStep({ file, onSeedSet }: Props) {
             <div
               className="rounded-full border-2 flex items-center justify-center"
               style={{
-                width:       48,
-                height:      48,
+                width:       32,
+                height:      32,
                 borderColor: config.colour,
                 background:  config.colour + "22",
               }}
@@ -427,8 +436,8 @@ export default function SeedStep({ file, onSeedSet }: Props) {
             <div
               className="absolute top-1/2 -translate-y-1/2"
               style={{
-                left:        -24,
-                width:       24,
+                left:        -16,
+                width:       16,
                 height:      2,
                 background:  config.colour,
               }}
