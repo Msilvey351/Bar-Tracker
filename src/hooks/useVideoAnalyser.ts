@@ -169,6 +169,41 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
 
       abortRef.current = new AbortController();
 
+      if (workerRef.current) {
+        workerRef.current.terminate();
+      }
+
+      const freshWorker = new Worker(
+        new URL("../workers/tracker.worker.ts", import.meta.url),
+        { type: "module" }
+      );
+
+      freshWorker.addEventListener("message", (e) => {
+        if (e.data?.type === "log") {
+          if (e.data.level === "warn") {
+            console.warn("[worker]", ...e.data.args);
+          } else {
+            console.log("[worker]", ...e.data.args);
+          }
+        }
+      });
+
+      workerRef.current = freshWorker;
+
+      // Wait for worker startup ack (WASM load complete)
+      await new Promise<void>((resolve) => {
+        const handler = (e: MessageEvent) => {
+          if (e.data?.type === "ack") {
+            freshWorker.removeEventListener("message", handler);
+            resolve();
+          }
+        };
+        freshWorker.addEventListener("message", handler);
+        // Safety timeout in case WASM fails to load
+        setTimeout(resolve, 3000);
+      });
+
+
       const video = document.createElement("video");
       video.muted       = true;
       video.playsInline = true;
@@ -344,7 +379,7 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
       } finally {
         if (url) URL.revokeObjectURL(url);
         if (document.body.contains(video)) document.body.removeChild(video);
-        workerRef.current?.postMessage({ type: "reset" });
+
         setIsAnalysing(false);
         setProgress(100);
       }
