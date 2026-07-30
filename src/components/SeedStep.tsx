@@ -50,15 +50,26 @@ export default function SeedStep({ file, onSeedSet }: Props) {
   const [crosshairClient, setCrosshairClient] = useState({ x: 0, y: 0 });
   const draggingRef = useRef(false);
 
+  // ── Helper: centre crosshair on video element synchronously ───────────────
+  const centreOnVideo = useCallback(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const rect = video.getBoundingClientRect();
+    setCrosshairClient({
+      x: rect.left + rect.width  / 2,
+      y: rect.top  + rect.height / 2,
+    });
+  }, []);
+
   // ── Load video and show first frame ───────────────────────────────────────
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
 
-    const url       = URL.createObjectURL(file);
-    video.src       = url;
-    video.muted     = true;
-    video.preload   = "auto";
+    const url         = URL.createObjectURL(file);
+    video.src         = url;
+    video.muted       = true;
+    video.preload     = "auto";
     video.playsInline = true;
 
     const onMeta   = () => { video.currentTime = 0; };
@@ -78,22 +89,13 @@ export default function SeedStep({ file, onSeedSet }: Props) {
     };
   }, [file]);
 
-  // ── Centre crosshair on the video element itself ──────────────────────────
-  const centreCrosshair = useCallback(() => {
-    setTimeout(() => {
-      const video = videoRef.current;
-      if (!video) return;
-      const rect = video.getBoundingClientRect();
-      setCrosshairClient({
-        x: rect.left + rect.width  / 2,
-        y: rect.top  + rect.height / 2,
-      });
-    }, 60);
-  }, []);
-
+  // ── Centre crosshair once frame is ready ──────────────────────────────────
   useEffect(() => {
-    if (ready) centreCrosshair();
-  }, [ready, centreCrosshair]);
+    if (!ready) return;
+    // Small delay to let the video element finish painting
+    const t = setTimeout(centreOnVideo, 60);
+    return () => clearTimeout(t);
+  }, [ready, centreOnVideo]);
 
   // ── Clamp to video element bounds ─────────────────────────────────────────
   const clampToVideo = useCallback((clientX: number, clientY: number) => {
@@ -118,6 +120,7 @@ export default function SeedStep({ file, onSeedSet }: Props) {
       setCrosshairClient(clampToVideo(e.clientX, e.clientY));
     };
     const onMouseUp = () => { draggingRef.current = false; };
+
     window.addEventListener("mousemove", onMouseMove);
     window.addEventListener("mouseup",   onMouseUp);
     return () => {
@@ -140,6 +143,7 @@ export default function SeedStep({ file, onSeedSet }: Props) {
       setCrosshairClient(clampToVideo(t.clientX, t.clientY));
     };
     const onTouchEnd = () => { draggingRef.current = false; };
+
     window.addEventListener("touchmove", onTouchMove, { passive: false });
     window.addEventListener("touchend",  onTouchEnd);
     return () => {
@@ -148,16 +152,7 @@ export default function SeedStep({ file, onSeedSet }: Props) {
     };
   }, [clampToVideo]);
 
-  /**
-   * Convert crosshair CLIENT position → VIDEO pixel coordinates.
-   *
-   * We use the VIDEO element's bounding rect (not canvas),
-   * because the video element correctly letterboxes/pillarboxes
-   * and getBoundingClientRect() gives us the actual displayed area.
-   *
-   * video.videoWidth/Height = native resolution
-   * rect.width/height       = displayed CSS size
-   */
+  // ── Convert crosshair CLIENT position → VIDEO pixel coords ───────────────
   const getCrosshairVideoPoint = useCallback((): Point => {
     const video = videoRef.current!;
     const rect  = video.getBoundingClientRect();
@@ -176,10 +171,8 @@ export default function SeedStep({ file, onSeedSet }: Props) {
     bot: Point | null
   ) => {
     const canvas = overlayRef.current;
-    const video  = videoRef.current;
-    if (!canvas || !video) return;
+    if (!canvas) return;
 
-    // Match overlay canvas to video native resolution
     canvas.width  = videoDims.w;
     canvas.height = videoDims.h;
 
@@ -188,6 +181,7 @@ export default function SeedStep({ file, onSeedSet }: Props) {
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
+    // Calibration line between plate top and bottom
     if (top && bot) {
       ctx.strokeStyle = "#3b82f6";
       ctx.lineWidth   = Math.max(2, videoDims.w / 400);
@@ -215,19 +209,26 @@ export default function SeedStep({ file, onSeedSet }: Props) {
     label:  string,
     r:      number
   ) {
+    // Circle
     ctx.beginPath();
     ctx.arc(pt.x, pt.y, r, 0, Math.PI * 2);
     ctx.strokeStyle = colour;
     ctx.lineWidth   = Math.max(2, r / 5);
     ctx.stroke();
+
+    // Centre dot
     ctx.beginPath();
     ctx.arc(pt.x, pt.y, r * 0.25, 0, Math.PI * 2);
     ctx.fillStyle = "#fff";
     ctx.fill();
+
+    // Crosshair arms
     ctx.strokeStyle = colour;
     ctx.lineWidth   = Math.max(1.5, r / 8);
     ctx.beginPath(); ctx.moveTo(pt.x - r * 1.6, pt.y); ctx.lineTo(pt.x + r * 1.6, pt.y); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(pt.x, pt.y - r * 1.6); ctx.lineTo(pt.x, pt.y + r * 1.6); ctx.stroke();
+
+    // Label
     ctx.fillStyle = colour;
     ctx.font      = `bold ${Math.max(12, r)}px monospace`;
     ctx.fillText(label, pt.x + r + 4, pt.y - r * 0.5);
@@ -237,9 +238,16 @@ export default function SeedStep({ file, onSeedSet }: Props) {
     if (ready) redrawOverlay(barPoint, plateTop, plateBot);
   }, [barPoint, plateTop, plateBot, ready, diameter, redrawOverlay]);
 
-  // ── Confirm position ──────────────────────────────────────────────────────
+  // ── Confirm current crosshair position ────────────────────────────────────
   const handleConfirmPosition = () => {
     const pt = getCrosshairVideoPoint();
+
+    /**
+     * Re-centre BEFORE state updates so getBoundingClientRect()
+     * reads the current layout. If we re-centre after, the component
+     * re-renders first and the layout may shift slightly, causing a jump.
+     */
+    centreOnVideo();
 
     if (step === "bar") {
       setBarPoint(pt);
@@ -251,26 +259,31 @@ export default function SeedStep({ file, onSeedSet }: Props) {
       setPlateBot(pt);
       setStep("done");
     }
-
-    centreCrosshair();
   };
 
+  // ── Reset ─────────────────────────────────────────────────────────────────
   const reset = () => {
+    // Centre before state updates to avoid layout-shift jump
+    centreOnVideo();
+
     setBarPoint(null);
     setPlateTop(null);
     setPlateBot(null);
     setStep("bar");
-    centreCrosshair();
   };
 
+  // ── Submit ────────────────────────────────────────────────────────────────
   const handleSubmit = () => {
     if (!barPoint || !plateTop || !plateBot) return;
     const pixelDiameter = Math.abs(plateBot.y - plateTop.y);
     const pxPerCm       = pixelDiameter / diameter;
     const pxPerM        = pxPerCm * 100;
     onSeedSet(barPoint, {
-      top: plateTop, bottom: plateBot,
-      diameterCm: diameter, pxPerCm, pxPerM,
+      top:        plateTop,
+      bottom:     plateBot,
+      diameterCm: diameter,
+      pxPerCm,
+      pxPerM,
     });
   };
 
@@ -279,7 +292,7 @@ export default function SeedStep({ file, onSeedSet }: Props) {
     ? Math.round(Math.abs(plateBot.y - plateTop.y))
     : null;
 
-  // Crosshair position relative to the container
+  // Crosshair position relative to the container div
   const containerRect = containerRef.current?.getBoundingClientRect();
   const crosshairRelX = containerRect ? crosshairClient.x - containerRect.left : 0;
   const crosshairRelY = containerRect ? crosshairClient.y - containerRect.top  : 0;
@@ -347,9 +360,9 @@ export default function SeedStep({ file, onSeedSet }: Props) {
         )}
 
         {/*
-          Video element shows the first frame.
-          object-contain ensures it letterboxes/pillarboxes correctly.
-          Its getBoundingClientRect() gives us the true displayed area.
+          The video element shows the first frame.
+          We use its getBoundingClientRect() for coordinate conversion
+          because it correctly accounts for letterboxing/pillarboxing.
         */}
         <video
           ref={videoRef}
@@ -361,8 +374,8 @@ export default function SeedStep({ file, onSeedSet }: Props) {
 
         {/*
           Overlay canvas for confirmed marker drawings.
-          Positioned absolutely over the video, matching its exact size.
-          pointer-events: none so it doesn't block crosshair dragging.
+          Covers the video exactly. pointer-events: none so it
+          doesn't block the draggable crosshair.
         */}
         <canvas
           ref={overlayRef}
@@ -370,7 +383,7 @@ export default function SeedStep({ file, onSeedSet }: Props) {
           style={{ pointerEvents: "none" }}
         />
 
-        {/* Draggable crosshair */}
+        {/* Draggable crosshair — only shown until all points are set */}
         {ready && step !== "done" && (
           <div
             className="absolute z-20 pointer-events-auto"
@@ -394,14 +407,19 @@ export default function SeedStep({ file, onSeedSet }: Props) {
                 background:  config.colour + "22",
               }}
             >
-              <div className="w-1.5 h-1.5 rounded-full" style={{ background: config.colour }} />
+              <div
+                className="w-1.5 h-1.5 rounded-full"
+                style={{ background: config.colour }}
+              />
             </div>
 
-            {/* Arms */}
+            {/* Horizontal arms */}
             <div className="absolute top-1/2 -translate-y-1/2"
               style={{ left: -16, width: 16, height: 2, background: config.colour }} />
             <div className="absolute top-1/2 -translate-y-1/2"
               style={{ right: -16, width: 16, height: 2, background: config.colour }} />
+
+            {/* Vertical arms */}
             <div className="absolute left-1/2 -translate-x-1/2"
               style={{ top: -16, width: 2, height: 16, background: config.colour }} />
             <div className="absolute left-1/2 -translate-x-1/2"
@@ -409,6 +427,7 @@ export default function SeedStep({ file, onSeedSet }: Props) {
           </div>
         )}
 
+        {/* BAR coordinate badge */}
         {barPoint && (
           <div className="absolute top-2 left-2 bg-orange-500/90 text-white text-xs font-mono px-2 py-1 rounded-md z-10">
             BAR ({Math.round(barPoint.x)}, {Math.round(barPoint.y)})
@@ -431,7 +450,7 @@ export default function SeedStep({ file, onSeedSet }: Props) {
         </button>
       )}
 
-      {/* Diameter input */}
+      {/* Diameter input + calibration info */}
       <div className="w-full max-w-3xl flex flex-wrap gap-4 items-center justify-between bg-white/5 border border-white/10 rounded-xl px-5 py-4">
         <div className="flex items-center gap-3">
           <label className="text-white/50 text-sm whitespace-nowrap">
@@ -468,7 +487,7 @@ export default function SeedStep({ file, onSeedSet }: Props) {
         </button>
       </div>
 
-      {/* Start Analysis */}
+      {/* Start Analysis button */}
       {step === "done" && barPoint && plateTop && plateBot && (
         <button
           onClick={handleSubmit}
