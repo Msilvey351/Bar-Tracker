@@ -33,39 +33,6 @@ const STEP_CONFIG: Record<ClickStep, { label: string; colour: string; hint: stri
   },
 };
 
-// ─── Helper: find the actual video content area inside the element ────────────
-// The video element may have black bars (letterbox/pillarbox) because the
-// video's aspect ratio doesn't match the element's CSS aspect ratio.
-// object-fit: contain centres the content and pads with black bars.
-function getVideoContentRect(
-  video:     HTMLVideoElement,
-  videoDims: { w: number; h: number }
-): { left: number; top: number; width: number; height: number } {
-  const rect        = video.getBoundingClientRect();
-  const videoAspect = videoDims.w / videoDims.h;
-  const elemAspect  = rect.width  / rect.height;
-
-  if (videoAspect > elemAspect) {
-    // Wider than element → letterbox (black bars top + bottom)
-    const h = rect.width / videoAspect;
-    return {
-      left:   rect.left,
-      top:    rect.top + (rect.height - h) / 2,
-      width:  rect.width,
-      height: h,
-    };
-  } else {
-    // Taller than element → pillarbox (black bars left + right)
-    const w = rect.height * videoAspect;
-    return {
-      left:   rect.left + (rect.width - w) / 2,
-      top:    rect.top,
-      width:  w,
-      height: rect.height,
-    };
-  }
-}
-
 export default function SeedStep({ file, onSeedSet }: Props) {
   const videoRef     = useRef<HTMLVideoElement>(null);
   const overlayRef   = useRef<HTMLCanvasElement>(null);
@@ -79,20 +46,16 @@ export default function SeedStep({ file, onSeedSet }: Props) {
   const [plateBot,  setPlateBot]  = useState<Point | null>(null);
   const [diameter,  setDiameter]  = useState<number>(45);
 
-  // Crosshair position in CLIENT (viewport) pixels
-  const [crosshairClient, setCrosshairClient] = useState({ x: 0, y: 0 });
+  /**
+   * Crosshair stored as FRACTIONS (0–1) of the video content area.
+   * fx=0 = left edge of video content, fx=1 = right edge.
+   * fy=0 = top edge of video content, fy=1 = bottom edge.
+   *
+   * This is immune to letterbox/pillarbox because we always work
+   * in the video's own coordinate space as a fraction.
+   */
+  const [crosshairFrac, setCrosshairFrac] = useState({ fx: 0.5, fy: 0.5 });
   const draggingRef = useRef(false);
-
-  // ── Centre crosshair on actual video content area ─────────────────────────
-  const centreOnVideo = useCallback(() => {
-    const video = videoRef.current;
-    if (!video) return;
-    const cr = getVideoContentRect(video, videoDims);
-    setCrosshairClient({
-      x: cr.left + cr.width  / 2,
-      y: cr.top  + cr.height / 2,
-    });
-  }, [videoDims]);
 
   // ── Load video and show first frame ───────────────────────────────────────
   useEffect(() => {
@@ -122,38 +85,50 @@ export default function SeedStep({ file, onSeedSet }: Props) {
     };
   }, [file]);
 
-  // ── Centre crosshair once first frame is ready ────────────────────────────
-  useEffect(() => {
-    if (!ready) return;
-    // Delay to let the video element finish painting and layout settle
-    const t = setTimeout(centreOnVideo, 80);
-    return () => clearTimeout(t);
-  }, [ready, centreOnVideo]);
-
-  // ── Clamp client position to actual video content area ───────────────────
-  const clampToVideo = useCallback((clientX: number, clientY: number) => {
-    const video = videoRef.current;
-    if (!video) return { x: clientX, y: clientY };
-    const cr = getVideoContentRect(video, videoDims);
+  /**
+   * Convert a CLIENT (viewport) pixel position to a fraction of the
+   * video content area.
+   *
+   * We use the canvas element which is sized to match the video content
+   * exactly (via CSS w-full h-full over the video), so its
+   * getBoundingClientRect() gives us the true content area.
+   */
+  const clientToFrac = useCallback((clientX: number, clientY: number): { fx: number; fy: number } => {
+    const canvas = overlayRef.current;
+    if (!canvas) return { fx: 0.5, fy: 0.5 };
+    const rect = canvas.getBoundingClientRect();
     return {
-      x: Math.max(cr.left, Math.min(cr.left + cr.width,  clientX)),
-      y: Math.max(cr.top,  Math.min(cr.top  + cr.height, clientY)),
+      fx: Math.max(0, Math.min(1, (clientX - rect.left) / rect.width)),
+      fy: Math.max(0, Math.min(1, (clientY - rect.top)  / rect.height)),
     };
-  }, [videoDims]);
+  }, []);
 
-  // ── Convert crosshair CLIENT position → VIDEO pixel coords ───────────────
-  const getCrosshairVideoPoint = useCallback((): Point => {
-    const video = videoRef.current!;
-    const cr    = getVideoContentRect(video, videoDims);
+  /**
+   * Convert fraction → video pixel coords.
+   * Simple — no letterbox calculation needed.
+   */
+  const fracToVideoPoint = useCallback((fx: number, fy: number): Point => ({
+    x: fx * videoDims.w,
+    y: fy * videoDims.h,
+  }), [videoDims]);
+
+  /**
+   * Convert fraction → CSS pixel position relative to the container div.
+   * Used to position the crosshair DOM element.
+   */
+  const fracToContainerPx = useCallback((fx: number, fy: number): { x: number; y: number } => {
+    const canvas    = overlayRef.current;
+    const container = containerRef.current;
+    if (!canvas || !container) return { x: 0, y: 0 };
+
+    const canvasRect    = canvas.getBoundingClientRect();
+    const containerRect = container.getBoundingClientRect();
+
     return {
-      x: Math.max(0, Math.min(videoDims.w,
-        (crosshairClient.x - cr.left) * (videoDims.w / cr.width)
-      )),
-      y: Math.max(0, Math.min(videoDims.h,
-        (crosshairClient.y - cr.top)  * (videoDims.h / cr.height)
-      )),
+      x: (canvasRect.left - containerRect.left) + fx * canvasRect.width,
+      y: (canvasRect.top  - containerRect.top)  + fy * canvasRect.height,
     };
-  }, [crosshairClient, videoDims]);
+  }, []);
 
   // ── Mouse drag ────────────────────────────────────────────────────────────
   const onMouseDownCrosshair = (e: React.MouseEvent) => {
@@ -164,7 +139,7 @@ export default function SeedStep({ file, onSeedSet }: Props) {
   useEffect(() => {
     const onMouseMove = (e: MouseEvent) => {
       if (!draggingRef.current) return;
-      setCrosshairClient(clampToVideo(e.clientX, e.clientY));
+      setCrosshairFrac(clientToFrac(e.clientX, e.clientY));
     };
     const onMouseUp = () => { draggingRef.current = false; };
 
@@ -174,7 +149,7 @@ export default function SeedStep({ file, onSeedSet }: Props) {
       window.removeEventListener("mousemove", onMouseMove);
       window.removeEventListener("mouseup",   onMouseUp);
     };
-  }, [clampToVideo]);
+  }, [clientToFrac]);
 
   // ── Touch drag ────────────────────────────────────────────────────────────
   const onTouchStartCrosshair = (e: React.TouchEvent) => {
@@ -187,7 +162,7 @@ export default function SeedStep({ file, onSeedSet }: Props) {
       if (!draggingRef.current) return;
       e.preventDefault();
       const t = e.touches[0];
-      setCrosshairClient(clampToVideo(t.clientX, t.clientY));
+      setCrosshairFrac(clientToFrac(t.clientX, t.clientY));
     };
     const onTouchEnd = () => { draggingRef.current = false; };
 
@@ -197,9 +172,9 @@ export default function SeedStep({ file, onSeedSet }: Props) {
       window.removeEventListener("touchmove", onTouchMove);
       window.removeEventListener("touchend",  onTouchEnd);
     };
-  }, [clampToVideo]);
+  }, [clientToFrac]);
 
-  // ── Draw confirmed markers on the overlay canvas ──────────────────────────
+  // ── Draw confirmed markers on overlay canvas ──────────────────────────────
   const redrawOverlay = useCallback((
     bar: Point | null,
     top: Point | null,
@@ -216,7 +191,6 @@ export default function SeedStep({ file, onSeedSet }: Props) {
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // Calibration line between plate top and bottom
     if (top && bot) {
       ctx.strokeStyle = "#3b82f6";
       ctx.lineWidth   = Math.max(2, videoDims.w / 400);
@@ -269,12 +243,9 @@ export default function SeedStep({ file, onSeedSet }: Props) {
     if (ready) redrawOverlay(barPoint, plateTop, plateBot);
   }, [barPoint, plateTop, plateBot, ready, diameter, redrawOverlay]);
 
-  // ── Confirm current crosshair position ────────────────────────────────────
+  // ── Confirm ───────────────────────────────────────────────────────────────
   const handleConfirmPosition = () => {
-    const pt = getCrosshairVideoPoint();
-
-    // Do NOT re-centre — leave crosshair where the user placed it.
-    // Re-centring caused a visual jump because layout may shift on re-render.
+    const pt = fracToVideoPoint(crosshairFrac.fx, crosshairFrac.fy);
 
     if (step === "bar") {
       setBarPoint(pt);
@@ -286,11 +257,12 @@ export default function SeedStep({ file, onSeedSet }: Props) {
       setPlateBot(pt);
       setStep("done");
     }
+    // Crosshair stays where it is — no jump
   };
 
   // ── Reset ─────────────────────────────────────────────────────────────────
   const reset = () => {
-    centreOnVideo();
+    setCrosshairFrac({ fx: 0.5, fy: 0.5 });
     setBarPoint(null);
     setPlateTop(null);
     setPlateBot(null);
@@ -317,10 +289,8 @@ export default function SeedStep({ file, onSeedSet }: Props) {
     ? Math.round(Math.abs(plateBot.y - plateTop.y))
     : null;
 
-  // Crosshair position relative to container div for absolute CSS positioning
-  const containerRect = containerRef.current?.getBoundingClientRect();
-  const crosshairRelX = containerRect ? crosshairClient.x - containerRect.left : 0;
-  const crosshairRelY = containerRect ? crosshairClient.y - containerRect.top  : 0;
+  // Crosshair CSS position relative to container
+  const crosshairPx = fracToContainerPx(crosshairFrac.fx, crosshairFrac.fy);
 
   return (
     <div className="flex flex-col items-center gap-5">
@@ -384,11 +354,6 @@ export default function SeedStep({ file, onSeedSet }: Props) {
           </div>
         )}
 
-        {/*
-          Video element shows the first frame.
-          getVideoContentRect() accounts for letterbox/pillarbox so that
-          coordinates map correctly to the video content, not the black bars.
-        */}
         <video
           ref={videoRef}
           playsInline
@@ -398,9 +363,10 @@ export default function SeedStep({ file, onSeedSet }: Props) {
         />
 
         {/*
-          Overlay canvas for drawing confirmed marker positions.
-          Covers the video exactly. pointer-events: none so the
-          draggable crosshair underneath still receives events.
+          KEY: The overlay canvas sits directly on top of the video element
+          and matches it pixel-for-pixel via absolute inset-0 w-full h-full.
+          Its getBoundingClientRect() gives the TRUE content area with no
+          letterbox/pillarbox ambiguity — we use this for all coordinate math.
         */}
         <canvas
           ref={overlayRef}
@@ -408,13 +374,13 @@ export default function SeedStep({ file, onSeedSet }: Props) {
           style={{ pointerEvents: "none" }}
         />
 
-        {/* Draggable crosshair — hidden once all points are confirmed */}
+        {/* Draggable crosshair */}
         {ready && step !== "done" && (
           <div
             className="absolute z-20 pointer-events-auto"
             style={{
-              left:        crosshairRelX,
-              top:         crosshairRelY,
+              left:        crosshairPx.x,
+              top:         crosshairPx.y,
               transform:   "translate(-50%, -50%)",
               cursor:      "grab",
               touchAction: "none",
@@ -422,7 +388,6 @@ export default function SeedStep({ file, onSeedSet }: Props) {
             onMouseDown={onMouseDownCrosshair}
             onTouchStart={onTouchStartCrosshair}
           >
-            {/* Outer ring */}
             <div
               className="rounded-full border-2 flex items-center justify-center"
               style={{
@@ -432,19 +397,13 @@ export default function SeedStep({ file, onSeedSet }: Props) {
                 background:  config.colour + "22",
               }}
             >
-              <div
-                className="w-1.5 h-1.5 rounded-full"
-                style={{ background: config.colour }}
-              />
+              <div className="w-1.5 h-1.5 rounded-full" style={{ background: config.colour }} />
             </div>
 
-            {/* Horizontal arms */}
             <div className="absolute top-1/2 -translate-y-1/2"
               style={{ left: -16, width: 16, height: 2, background: config.colour }} />
             <div className="absolute top-1/2 -translate-y-1/2"
               style={{ right: -16, width: 16, height: 2, background: config.colour }} />
-
-            {/* Vertical arms */}
             <div className="absolute left-1/2 -translate-x-1/2"
               style={{ top: -16, width: 2, height: 16, background: config.colour }} />
             <div className="absolute left-1/2 -translate-x-1/2"
@@ -452,7 +411,6 @@ export default function SeedStep({ file, onSeedSet }: Props) {
           </div>
         )}
 
-        {/* BAR coordinate badge */}
         {barPoint && (
           <div className="absolute top-2 left-2 bg-orange-500/90 text-white text-xs font-mono px-2 py-1 rounded-md z-10">
             BAR ({Math.round(barPoint.x)}, {Math.round(barPoint.y)})
@@ -475,7 +433,7 @@ export default function SeedStep({ file, onSeedSet }: Props) {
         </button>
       )}
 
-      {/* Diameter input + calibration info */}
+      {/* Diameter input */}
       <div className="w-full max-w-3xl flex flex-wrap gap-4 items-center justify-between bg-white/5 border border-white/10 rounded-xl px-5 py-4">
         <div className="flex items-center gap-3">
           <label className="text-white/50 text-sm whitespace-nowrap">
@@ -512,7 +470,7 @@ export default function SeedStep({ file, onSeedSet }: Props) {
         </button>
       </div>
 
-      {/* Start Analysis button */}
+      {/* Start Analysis */}
       {step === "done" && barPoint && plateTop && plateBot && (
         <button
           onClick={handleSubmit}
