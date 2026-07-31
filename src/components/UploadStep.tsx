@@ -17,7 +17,7 @@ export default function UploadStep({ onFileAccepted }: Props) {
   const handleFile = useCallback(
     (file: File) => {
       if (!ACCEPTED.includes(file.type) && !file.name.match(/\.(mp4|webm|mov|avi)$/i)) {
-        setErr("Please upload a video file (MP4, WebM, MOV, AVI).");
+        setErr("Please upload a video file (MP4, WebM, MOV, AVI). Trim the video to include only the lift. ");
         return;
       }
       setErr(null);

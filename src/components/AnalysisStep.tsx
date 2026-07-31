@@ -104,7 +104,7 @@ export default function AnalysisStep({
             />
           </div>
           <p className="text-white/25 text-xs text-center mt-2">
-            Processing in your browser — keep this tab open
+            Processing in your browser — keep this tab open. May take 1-2 minutes. 
           </p>
         </div>
       )}

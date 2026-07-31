@@ -62,7 +62,7 @@ export default function HowItWorksModal({ onClose }: Props) {
               <p className="font-semibold text-white mb-1">Upload your video</p>
               <p>
                 Film your lift so that the weight plates are entirely in frame. Side angles work best.
-                Upload any MP4, MOV or WebM video — any length.
+                Upload any MP4, MOV or WebM video — any length. Trim the video to include only the lift. 
               </p>
             </div>
           </div>
