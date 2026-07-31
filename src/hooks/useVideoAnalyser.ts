@@ -380,7 +380,7 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
                clearTimeout(safetyTimeout);
                video.pause();
              } else {
-               if (!isFinished && !video.ended && currentTime < duration - 0.05) {
+               if (!isFinished && !video.ended && video.currentTime < duration - 0.05) {
                  video.play().catch(console.error);
                  // The pending requestVideoFrameCallback will fire automatically once it starts playing
                }
