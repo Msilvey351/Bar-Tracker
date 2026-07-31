@@ -136,7 +136,7 @@ export default function VideoPlayback({ file, result, vFrames }: Props) {
     <div className="flex flex-col gap-3">
       <div
         className="relative rounded-xl overflow-hidden border border-white/10 bg-black"
-        style={{ minHeight: "200px" }}
+        style={{ minHeight: "200px", maxHeight: "65vh" }}
       >
         {/* Loading state */}
         {!ready && !error && (
@@ -167,7 +167,10 @@ export default function VideoPlayback({ file, result, vFrames }: Props) {
           playsInline
           muted
           className="w-full block"
-          style={{ display: ready && !error ? "block" : "none" }}
+          style={{ display: ready && !error ? "block" : "none",
+            maxHeight: "65vh",
+            objectFit: "contain",
+          }}
         />
 
         {/* Canvas overlay */}

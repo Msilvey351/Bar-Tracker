@@ -347,6 +347,7 @@ export default function SeedStep({ file, onSeedSet }: Props) {
       <div
         ref={containerRef}
         className="relative w-full max-w-3xl rounded-xl overflow-hidden border border-white/10 bg-black select-none"
+        style={{ maxHeight: "65vh" }}
       >
         {!ready && (
           <div className="h-64 flex items-center justify-center text-white/40 text-sm">
@@ -359,7 +360,10 @@ export default function SeedStep({ file, onSeedSet }: Props) {
           playsInline
           muted
           className="w-full block"
-          style={{ display: ready ? "block" : "none" }}
+          style={{ 
+            display: ready ? "block" : "none" ,
+          maxHeight: "65vh",
+        objectFit: "contain",}}
         />
 
         {/*
