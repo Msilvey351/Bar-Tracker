@@ -149,6 +149,40 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
     [workerSend]
   );
 
+  // ── Process one tracked frame ─────────────────────────────────────────────
+  const processFrame = useCallback(
+    async (
+      imageData:     ImageData,
+      timeSeconds:   number,
+      frameIndex:    number,
+      scale:         number,
+      currentPoint:  { x: number; y: number },
+    ): Promise<{
+      newPoint:    { x: number; y: number };
+      frameResult: FrameResult;
+    }> => {
+      
+      const tracked   = await workerTrack(imageData);
+      
+      // The worker now rigorously validates confidence AND max jump internally.
+      // We trust its `tracked` boolean completely.
+      const newPoint = tracked.tracked ? { x: tracked.x, y: tracked.y } : currentPoint;
+
+      return {
+        newPoint,
+        frameResult: {
+          frameIndex,
+          timeSeconds,
+          position: {
+            x: newPoint.x / scale,
+            y: newPoint.y / scale,
+          },
+        },
+      };
+    },
+    [workerTrack]
+  );
+
   // ── Main analysis entry point ─────────────────────────────────────────────
   const analyse = useCallback(
     async (file: File, seed: Point) => {
@@ -183,22 +217,6 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
 
       workerRef.current = freshWorker;
 
-      // Wait for WASM to load completely before sending messages
-      await new Promise<void>((resolve) => {
-        const handler = (e: MessageEvent) => {
-          if (e.data?.type === "ack") {
-            freshWorker.removeEventListener("message", handler);
-            resolve();
-          }
-        };
-        freshWorker.addEventListener("message", handler);
-        // Safety timeout
-        setTimeout(() => {
-          freshWorker.removeEventListener("message", handler);
-          resolve();
-        }, 3000);
-      });
-
       const video = document.createElement("video");
       video.muted       = true;
       video.playsInline = true;
@@ -229,7 +247,7 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
            }
         });
 
-        const duration       = video.duration;
+        const duration    = video.duration;
         const approximateFps = chooseAnalysisFps(duration); 
         
         const videoWidth  = video.videoWidth;
@@ -268,6 +286,7 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
              resolve();
           };
 
+          // Native video ended event guarantees we are done
           video.addEventListener("ended", finish, { once: true });
 
           const processNextFrame = async (now: number, metadata: VideoFrameCallbackMetadata) => {
@@ -280,6 +299,7 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
 
             const currentTime = metadata.mediaTime;
             
+            // The browser sometimes fires callbacks for the same frame twice.
             if (currentTime === lastProcessedTime) {
                if (!video.ended && !video.paused) {
                  video.requestVideoFrameCallback(processNextFrame);
@@ -290,6 +310,7 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
             }
             lastProcessedTime = currentTime;
 
+            // Draw and capture
             ctx.drawImage(video, 0, 0, SCALED_WIDTH, scaledH);
             const imageData = ctx.getImageData(0, 0, SCALED_WIDTH, scaledH);
 
@@ -302,16 +323,16 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
                 position: { x: seed.x, y: seed.y },
               });
             } else {
-              const tracked = await workerTrack(imageData);
-              const newPoint = tracked.tracked ? { x: tracked.x, y: tracked.y } : currentPoint;
+              const { newPoint, frameResult } = await processFrame(
+                imageData,
+                currentTime,
+                framesProcessed,
+                scale,
+                currentPoint
+              );
 
               currentPoint = newPoint;
-
-              allFrames.push({
-                frameIndex: framesProcessed,
-                timeSeconds: currentTime,
-                position: { x: newPoint.x / scale, y: newPoint.y / scale },
-              });
+              allFrames.push(frameResult);
             }
 
             framesProcessed++;
@@ -319,9 +340,12 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
                setProgress(Math.round((currentTime / duration) * 100));
             }
 
+            // Standard termination check
             if (!video.ended && currentTime < duration - 0.05) {
                if (video.paused) video.play().catch(reject);
                
+               // Set a safety timeout. If the browser hangs at the end of the video
+               // and never fires another frame callback, we kill the loop and resolve.
                safetyTimeout = setTimeout(() => {
                   console.log("Safety timeout hit - ending loop early.");
                   finish();
@@ -333,15 +357,17 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
             }
           };
 
+          // Start the loop
           video.currentTime = 0;
           video.requestVideoFrameCallback(processNextFrame);
           video.play().catch(reject);
         });
 
+        // ── Smooth and emit final result ─────────────────────────────────────────
         const smoothed = smoothPositions(allFrames);
         setLiveFrames(smoothed);
 
-        // Recalculate true FPS based on actual frame count
+        // Recalculate true FPS based on how many frames we actually got
         const trueFps = allFrames.length / duration;
 
         setResult({
@@ -361,7 +387,7 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
         setProgress(100);
       }
     },
-    [workerInit, workerSeed, workerTrack]
+    [workerInit, workerSeed, processFrame]
   );
 
   return {

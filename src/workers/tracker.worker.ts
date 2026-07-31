@@ -90,13 +90,7 @@ function buildPatchTS(data: Uint8ClampedArray, width: number, height: number, cx
   }
 }
 
-function trackPointTS(
-  data: Uint8ClampedArray,
-  width: number,
-  height: number,
-  startX: number,
-  startY: number
-): { x: number; y: number; confidence: number } {
+function trackPointTS(data: Uint8ClampedArray, width: number, height: number, startX: number, startY: number): { x: number; y: number; confidence: number } {
   if (!tsPatchData || !tsIxData || !tsIyData) return { x: startX, y: startY, confidence: 0 };
   
   const r = PATCH_RADIUS;
@@ -194,6 +188,8 @@ self.onmessage = (event: MessageEvent<IncomingMessage>) => {
       frameWidth  = msg.width;
       frameHeight = msg.height;
       MAX_ITERATIONS = msg.isMobile ? 12 : 20;
+      
+      // Auto-ack on load since we bypassed WASM
       self.postMessage({ type: "ack" } as AckMessage);
       break;
     }
@@ -207,7 +203,6 @@ self.onmessage = (event: MessageEvent<IncomingMessage>) => {
       frameHeight = h;
       currentPoint = { x, y };
       
-      // Directly pass pixels (it's typed as Uint8ClampedArray)
       buildPatchTS(pixels, w, h, msg.x, msg.y);
 
       self.postMessage({ type: "ack" } as AckMessage);
@@ -226,7 +221,6 @@ self.onmessage = (event: MessageEvent<IncomingMessage>) => {
 
       const { x, y, confidence } = trackPointTS(pixels, w, h, currentPoint.x, currentPoint.y);
 
-      // Distance jumped in pixels
       const jump = Math.sqrt(Math.pow(x - currentPoint.x, 2) + Math.pow(y - currentPoint.y, 2));
 
       // Worker is now the sole decider of what is a valid track.
@@ -235,6 +229,7 @@ self.onmessage = (event: MessageEvent<IncomingMessage>) => {
 
       if (tracked) {
         // Anti-Poisoning check: Only update the template if it's a nearly perfect match.
+        // If it's blurry/lagging but > MIN_CONFIDENCE, we keep the old, crisp template.
         if (confidence >= TEMPLATE_UPDATE_CONFIDENCE) {
           buildPatchTS(pixels, w, h, x, y);
         }
@@ -259,6 +254,3 @@ self.onmessage = (event: MessageEvent<IncomingMessage>) => {
     }
   }
 };
-
-// Auto-ack on load since we bypassed WASM
-self.postMessage({ type: "ack" } as AckMessage);
