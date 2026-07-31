@@ -15,18 +15,10 @@ interface UseVideoAnalyserReturn {
 }
 
 const SCALED_WIDTH             = 320;
-const MAX_JUMP_HEIGHT_FRACTION = 0.18;
-const MIN_MAX_JUMP_PX          = 20;
 const SMOOTHING_WINDOW         = 3;
 
 const isMobile = typeof navigator !== "undefined" &&
   /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
-
-function chooseAnalysisFps(durationSeconds: number): number {
-  if (durationSeconds <= 25) return 60;
-  if (durationSeconds <= 60) return 30;
-  return 24;
-}
 
 function distance(a: Point, b: Point): number {
   const dx = a.x - b.x;
@@ -170,6 +162,8 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
     }> => {
       
       const tracked   = await workerTrack(imageData);
+      
+      // Trust the robust worker logic completely
       const newPoint = tracked.tracked ? { x: tracked.x, y: tracked.y } : currentPoint;
 
       return {
@@ -239,6 +233,8 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
       video.muted       = true;
       video.playsInline = true;
       video.preload     = "auto";
+      
+      // We must append to DOM for iOS Safari to reliably decode hardware frames
       video.style.cssText = "position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;";
       document.body.appendChild(video);
 
@@ -255,6 +251,7 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
           setTimeout(() => reject(new Error("Metadata timeout")), 10_000);
         });
 
+        // Wait until enough data is buffered to play through smoothly
         await new Promise<void>((resolve) => {
            if (video.readyState >= 3) {
              resolve();
@@ -265,10 +262,10 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
         });
 
         const duration    = video.duration;
-        const approximateFps = chooseAnalysisFps(duration); 
-        
         const videoWidth  = video.videoWidth;
         const videoHeight = video.videoHeight;
+        
+        // Critical: Native video dimensions bypass any rotation metadata scaling bugs
         const scale       = SCALED_WIDTH / videoWidth;
         const scaledH     = Math.round(videoHeight * scale);
 
@@ -277,7 +274,6 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
         const ctx = canvas.getContext("2d", { willReadFrequently: true });
         if (!ctx) throw new Error("Could not get canvas context");
 
-        setLiveFps(approximateFps);
         setLiveVideoDims({ width: videoWidth, height: videoHeight });
 
         let currentPoint: Point = { x: seed.x * scale, y: seed.y * scale };
@@ -289,7 +285,7 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
         let framesProcessed = 0;
         let lastProcessedTime = -1;
         
-        // Fast hardware-synced playback loop
+        // Fast hardware-synced playback loop using RVFC
         await new Promise<void>((resolve, reject) => {
           
           let safetyTimeout: NodeJS.Timeout;
@@ -315,6 +311,7 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
 
             const currentTime = metadata.mediaTime;
             
+            // Prevent processing duplicate frames (common on high refresh rate displays)
             if (currentTime === lastProcessedTime) {
                if (!video.ended && !video.paused) {
                  video.requestVideoFrameCallback(processNextFrame);
@@ -325,6 +322,7 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
             }
             lastProcessedTime = currentTime;
 
+            // Draw current frame natively to canvas (handles all rotation/color spaces)
             ctx.drawImage(video, 0, 0, SCALED_WIDTH, scaledH);
             const imageData = ctx.getImageData(0, 0, SCALED_WIDTH, scaledH);
 
@@ -354,12 +352,10 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
                setProgress(Math.round((currentTime / duration) * 100));
             }
 
+            // Request next frame if video is still playing
             if (!video.ended && currentTime < duration - 0.05) {
                if (video.paused && !document.hidden) video.play().catch(reject);
                
-               // Safety timeout only runs if the document is visible.
-               // If the user switches tabs, the browser pauses video playback and requestVideoFrameCallback.
-               // We don't want to trigger the timeout and prematurely end the analysis.
                if (!document.hidden) {
                  safetyTimeout = setTimeout(() => {
                     console.log("Safety timeout hit - ending loop early.");
@@ -373,8 +369,7 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
             }
           };
 
-          // Handle tab switching (Page Visibility API)
-          // When user leaves tab, video pauses. When they return, we resume playing so RVFC continues.
+          // Handle tab switching so analysis doesn't break
           const handleVisibilityChange = () => {
              if (document.hidden) {
                clearTimeout(safetyTimeout);
@@ -382,7 +377,6 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
              } else {
                if (!isFinished && !video.ended && video.currentTime < duration - 0.05) {
                  video.play().catch(console.error);
-                 // The pending requestVideoFrameCallback will fire automatically once it starts playing
                }
              }
           };
@@ -394,35 +388,33 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
           video.requestVideoFrameCallback(processNextFrame);
           video.play().catch(reject);
           
-          // Cleanup visibility listener when the promise resolves
           const cleanup = () => {
             document.removeEventListener("visibilitychange", handleVisibilityChange);
           };
           
-          // Intercept the original finish to add cleanup
           const originalFinish = finish;
           const finishWithCleanup = () => {
             cleanup();
             originalFinish();
           }
           
-          // Reassign finish
           video.removeEventListener("ended", finish);
           video.addEventListener("ended", finishWithCleanup, { once: true });
           
         });
 
-        // ── Smooth and emit final result ─────────────────────────────────────────
         const smoothed = smoothPositions(allFrames);
         setLiveFrames(smoothed);
 
+        // Derive true FPS from actual frames captured
         const trueFps = allFrames.length / duration;
+        setLiveFps(trueFps);
 
         setResult({
           frames: smoothed,
           fps: trueFps,
-          videoWidth,
-          videoHeight,
+          videoWidth: videoWidth,
+          videoHeight: videoHeight,
           durationSeconds: duration,
         });
 
