@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AnalysisResult, FrameResult, Point } from "@/types";
-import { seekVideo, waitUntilReady } from "@/lib/seekVideo";
 
 interface UseVideoAnalyserReturn {
   analyse:       (file: File, seed: Point) => Promise<void>;
@@ -16,24 +15,10 @@ interface UseVideoAnalyserReturn {
 }
 
 const SCALED_WIDTH             = 320;
-const MAX_JUMP_HEIGHT_FRACTION = 0.18;
-const MIN_MAX_JUMP_PX          = 20;
 const SMOOTHING_WINDOW         = 3;
 
 const isMobile = typeof navigator !== "undefined" &&
   /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
-
-function chooseAnalysisFps(durationSeconds: number): number {
-  if (durationSeconds <= 25) return 60;
-  if (durationSeconds <= 60) return 30;
-  return 24;
-}
-
-function distance(a: Point, b: Point): number {
-  const dx = a.x - b.x;
-  const dy = a.y - b.y;
-  return Math.sqrt(dx * dx + dy * dy);
-}
 
 function medianOf(values: number[]): number {
   if (!values.length) return 0;
@@ -158,7 +143,6 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
     [workerSend]
   );
 
-  // ── Process one tracked frame ─────────────────────────────────────────────
   const processFrame = useCallback(
     async (
       imageData:     ImageData,
@@ -170,11 +154,7 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
       newPoint:    { x: number; y: number };
       frameResult: FrameResult;
     }> => {
-      
       const tracked   = await workerTrack(imageData);
-      
-      // The worker now rigorously validates confidence AND max jump internally.
-      // We trust its `tracked` boolean completely.
       const newPoint = tracked.tracked ? { x: tracked.x, y: tracked.y } : currentPoint;
 
       return {
@@ -204,7 +184,6 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
 
       abortRef.current = new AbortController();
 
-      // Ensure a fresh worker for every analysis to prevent state bleed
       if (workerRef.current) {
         workerRef.current.terminate();
       }
@@ -226,7 +205,6 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
 
       workerRef.current = freshWorker;
 
-      // Wait for WASM to load completely before sending messages
       await new Promise<void>((resolve) => {
         const handler = (e: MessageEvent) => {
           if (e.data?.type === "ack") {
@@ -235,7 +213,6 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
           }
         };
         freshWorker.addEventListener("message", handler);
-        // Safety timeout
         setTimeout(() => {
           freshWorker.removeEventListener("message", handler);
           resolve();
@@ -262,7 +239,6 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
           setTimeout(() => reject(new Error("Metadata timeout")), 10_000);
         });
 
-        // Buffer enough to play smoothly
         await new Promise<void>((resolve) => {
            if (video.readyState >= 3) {
              resolve();
@@ -273,9 +249,6 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
         });
 
         const duration    = video.duration;
-        const fps         = chooseAnalysisFps(duration); 
-        const totalFrames = Math.floor(duration * fps);
-        
         const videoWidth  = video.videoWidth;
         const videoHeight = video.videoHeight;
         const scale       = SCALED_WIDTH / videoWidth;
@@ -286,7 +259,6 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
         const ctx = canvas.getContext("2d", { willReadFrequently: true });
         if (!ctx) throw new Error("Could not get canvas context");
 
-        setLiveFps(fps);
         setLiveVideoDims({ width: videoWidth, height: videoHeight });
 
         let currentPoint: Point = { x: seed.x * scale, y: seed.y * scale };
@@ -294,61 +266,106 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
         await workerInit(SCALED_WIDTH, scaledH);
 
         const allFrames: FrameResult[] = [];
-
-        video.pause();
-        await seekVideo(video, 0);
+        let seeded = false;
+        let framesProcessed = 0;
+        let lastProcessedTime = -1;
         
-        // Wait briefly for the frame to paint after seeking
-        await new Promise(r => setTimeout(r, 100));
+        // Use playback loop (RVFC) for speed. 
+        // The worker's Pre-Search handles any dropped frames.
+        await new Promise<void>((resolve, reject) => {
+          
+          let safetyTimeout: NodeJS.Timeout;
+          let isFinished = false;
 
-        // Capture First Frame
-        ctx.drawImage(video, 0, 0, SCALED_WIDTH, scaledH);
-        const firstImageData = ctx.getImageData(0, 0, SCALED_WIDTH, scaledH);
+          const finish = () => {
+             if (isFinished) return;
+             isFinished = true;
+             clearTimeout(safetyTimeout);
+             video.pause();
+             resolve();
+          };
 
-        // Seed Worker
-        await workerSeed(currentPoint.x, currentPoint.y, firstImageData);
+          video.addEventListener("ended", finish, { once: true });
 
-        allFrames.push({
-          frameIndex: 0,
-          timeSeconds: 0,
-          position: { x: seed.x, y: seed.y },
-        });
+          const processNextFrame = async (now: number, metadata: VideoFrameCallbackMetadata) => {
+            if (abortRef.current?.signal.aborted || isFinished) {
+              finish();
+              return;
+            }
 
-        // Deterministic Seek Loop
-        for (let fi = 1; fi < totalFrames; fi++) {
-            if (abortRef.current?.signal.aborted) break;
+            clearTimeout(safetyTimeout);
 
-            const t = fi / fps;
-            if (t > duration) break;
-
-            await seekVideo(video, t);
+            const currentTime = metadata.mediaTime;
             
+            if (currentTime === lastProcessedTime) {
+               if (!video.ended && !video.paused) {
+                 video.requestVideoFrameCallback(processNextFrame);
+               } else {
+                 finish();
+               }
+               return;
+            }
+            lastProcessedTime = currentTime;
+
             ctx.drawImage(video, 0, 0, SCALED_WIDTH, scaledH);
             const imageData = ctx.getImageData(0, 0, SCALED_WIDTH, scaledH);
 
-            const { newPoint, frameResult } = await processFrame(
+            if (!seeded) {
+              await workerSeed(currentPoint.x, currentPoint.y, imageData);
+              seeded = true;
+              allFrames.push({
+                frameIndex: 0,
+                timeSeconds: currentTime,
+                position: { x: seed.x, y: seed.y },
+              });
+            } else {
+              const { newPoint, frameResult } = await processFrame(
                 imageData,
-                t,
-                fi,
+                currentTime,
+                framesProcessed,
                 scale,
                 currentPoint
-            );
+              );
 
-            currentPoint = newPoint;
-            allFrames.push(frameResult);
-
-            if (fi % 10 === 0) {
-               setProgress(Math.round((fi / totalFrames) * 100));
+              currentPoint = newPoint;
+              allFrames.push(frameResult);
             }
-        }
 
-        // ── Smooth and emit final result ─────────────────────────────────────────
+            framesProcessed++;
+            if (framesProcessed % 10 === 0) {
+               setProgress(Math.round((currentTime / duration) * 100));
+            }
+
+            if (!video.ended && currentTime < duration - 0.05) {
+               // Must call play() to advance to the next frame
+               if (video.paused) video.play().catch(reject);
+               
+               safetyTimeout = setTimeout(() => {
+                  console.log("Safety timeout hit - ending loop early.");
+                  finish();
+               }, 500);
+
+               video.requestVideoFrameCallback(processNextFrame);
+            } else {
+               finish();
+            }
+          };
+
+          video.currentTime = 0;
+          video.requestVideoFrameCallback(processNextFrame);
+          video.play().catch(reject);
+        });
+
         const smoothed = smoothPositions(allFrames);
         setLiveFrames(smoothed);
 
+        // Derive true FPS from frames captured
+        const trueFps = allFrames.length / duration;
+        setLiveFps(trueFps);
+
         setResult({
           frames: smoothed,
-          fps: fps,
+          fps: trueFps,
           videoWidth,
           videoHeight,
           durationSeconds: duration,
