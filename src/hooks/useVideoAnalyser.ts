@@ -15,10 +15,24 @@ interface UseVideoAnalyserReturn {
 }
 
 const SCALED_WIDTH             = 320;
+const MAX_JUMP_HEIGHT_FRACTION = 0.18;
+const MIN_MAX_JUMP_PX          = 20;
 const SMOOTHING_WINDOW         = 3;
 
 const isMobile = typeof navigator !== "undefined" &&
   /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+
+function chooseAnalysisFps(durationSeconds: number): number {
+  if (durationSeconds <= 25) return 60;
+  if (durationSeconds <= 60) return 30;
+  return 24;
+}
+
+function distance(a: Point, b: Point): number {
+  const dx = a.x - b.x;
+  const dy = a.y - b.y;
+  return Math.sqrt(dx * dx + dy * dy);
+}
 
 function medianOf(values: number[]): number {
   if (!values.length) return 0;
@@ -154,6 +168,7 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
       newPoint:    { x: number; y: number };
       frameResult: FrameResult;
     }> => {
+      
       const tracked   = await workerTrack(imageData);
       const newPoint = tracked.tracked ? { x: tracked.x, y: tracked.y } : currentPoint;
 
@@ -184,6 +199,7 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
 
       abortRef.current = new AbortController();
 
+      // Ensure a fresh worker for every analysis to prevent state bleed
       if (workerRef.current) {
         workerRef.current.terminate();
       }
@@ -249,6 +265,8 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
         });
 
         const duration    = video.duration;
+        const approximateFps = chooseAnalysisFps(duration); 
+        
         const videoWidth  = video.videoWidth;
         const videoHeight = video.videoHeight;
         const scale       = SCALED_WIDTH / videoWidth;
@@ -259,6 +277,7 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
         const ctx = canvas.getContext("2d", { willReadFrequently: true });
         if (!ctx) throw new Error("Could not get canvas context");
 
+        setLiveFps(approximateFps);
         setLiveVideoDims({ width: videoWidth, height: videoHeight });
 
         let currentPoint: Point = { x: seed.x * scale, y: seed.y * scale };
@@ -270,8 +289,7 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
         let framesProcessed = 0;
         let lastProcessedTime = -1;
         
-        // Use playback loop (RVFC) for speed. 
-        // The worker's Pre-Search handles any dropped frames.
+        // Fast hardware-synced playback loop
         await new Promise<void>((resolve, reject) => {
           
           let safetyTimeout: NodeJS.Timeout;
@@ -337,13 +355,17 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
             }
 
             if (!video.ended && currentTime < duration - 0.05) {
-               // Must call play() to advance to the next frame
-               if (video.paused) video.play().catch(reject);
+               if (video.paused && !document.hidden) video.play().catch(reject);
                
-               safetyTimeout = setTimeout(() => {
-                  console.log("Safety timeout hit - ending loop early.");
-                  finish();
-               }, 500);
+               // Safety timeout only runs if the document is visible.
+               // If the user switches tabs, the browser pauses video playback and requestVideoFrameCallback.
+               // We don't want to trigger the timeout and prematurely end the analysis.
+               if (!document.hidden) {
+                 safetyTimeout = setTimeout(() => {
+                    console.log("Safety timeout hit - ending loop early.");
+                    finish();
+                 }, 500);
+               }
 
                video.requestVideoFrameCallback(processNextFrame);
             } else {
@@ -351,17 +373,50 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
             }
           };
 
+          // Handle tab switching (Page Visibility API)
+          // When user leaves tab, video pauses. When they return, we resume playing so RVFC continues.
+          const handleVisibilityChange = () => {
+             if (document.hidden) {
+               clearTimeout(safetyTimeout);
+               video.pause();
+             } else {
+               if (!isFinished && !video.ended && currentTime < duration - 0.05) {
+                 video.play().catch(console.error);
+                 // The pending requestVideoFrameCallback will fire automatically once it starts playing
+               }
+             }
+          };
+          
+          document.addEventListener("visibilitychange", handleVisibilityChange);
+
+          // Start the loop
           video.currentTime = 0;
           video.requestVideoFrameCallback(processNextFrame);
           video.play().catch(reject);
+          
+          // Cleanup visibility listener when the promise resolves
+          const cleanup = () => {
+            document.removeEventListener("visibilitychange", handleVisibilityChange);
+          };
+          
+          // Intercept the original finish to add cleanup
+          const originalFinish = finish;
+          const finishWithCleanup = () => {
+            cleanup();
+            originalFinish();
+          }
+          
+          // Reassign finish
+          video.removeEventListener("ended", finish);
+          video.addEventListener("ended", finishWithCleanup, { once: true });
+          
         });
 
+        // ── Smooth and emit final result ─────────────────────────────────────────
         const smoothed = smoothPositions(allFrames);
         setLiveFrames(smoothed);
 
-        // Derive true FPS from frames captured
         const trueFps = allFrames.length / duration;
-        setLiveFps(trueFps);
 
         setResult({
           frames: smoothed,
