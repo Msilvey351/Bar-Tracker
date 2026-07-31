@@ -452,7 +452,7 @@ export function detectPhasesAndReps(
 ): VelocityFrame[] {
   const result = vFrames.map((f) => ({
     ...f,
-    phase:    "rest" as Phase,
+    phase: "rest" as Phase,
     repIndex: null as number | null,
   }));
 
@@ -472,42 +472,74 @@ export function detectPhasesAndReps(
   candidates = trimEdgeCandidates(candidates);
   if (!candidates.length) return result;
 
+
   candidates.forEach((candidate, repIdx) => {
-    let lastDir: -1 | 1 = 1;
+    // ─── 1. Find the primary peaks for this specific candidate ──────────────
+    const firstFrames = result.slice(candidate.first.start, candidate.first.end + 1);
+    const secondFrames = result.slice(candidate.second.start, candidate.second.end + 1);
 
+    const firstPeakIdx = candidate.first.start + firstFrames.reduce((bestIdx, f, i, arr) => 
+      f.velocitySmoothed > arr[bestIdx].velocitySmoothed ? i : bestIdx, 0);
+      
+    const secondPeakIdx = candidate.second.start + secondFrames.reduce((bestIdx, f, i, arr) => 
+      f.velocitySmoothed > arr[bestIdx].velocitySmoothed ? i : bestIdx, 0);
 
+    // ─── 2. Trim inwards towards the peaks ──────────────────────────────────
+    // Walk outwards from the peaks until velocity drops below a strict cutoff.
+    // This ignores secondary bounces (like bar whip) that occur at the edges.
+    const cutoffFraction = 0.15; // 15% of the peak speed cuts off the wobble
+
+    let cleanStart = firstPeakIdx;
+    while (cleanStart > candidate.first.start && result[cleanStart].velocitySmoothed > candidate.first.peakSpeed * cutoffFraction) {
+      cleanStart--;
+    }
+
+    let cleanMid1 = firstPeakIdx;
+    while (cleanMid1 < candidate.first.end && result[cleanMid1].velocitySmoothed > candidate.first.peakSpeed * cutoffFraction) {
+      cleanMid1++;
+    }
+
+    let cleanMid2 = secondPeakIdx;
+    while (cleanMid2 > candidate.second.start && result[cleanMid2].velocitySmoothed > candidate.second.peakSpeed * cutoffFraction) {
+      cleanMid2--;
+    }
+
+    let cleanEnd = secondPeakIdx;
+    while (cleanEnd < candidate.second.end && result[cleanEnd].velocitySmoothed > candidate.second.peakSpeed * cutoffFraction) {
+      cleanEnd++;
+    }
+
+    // ─── 3. Assign phases only within the cleaned windows ───────────────────
     for (let i = candidate.start; i <= candidate.end; i++) {
-      const f   = result[i];
+      const f = result[i];
       const dir = signOf(f.velocityY);
 
-      /**
-       * KEY FIX: removed the `peakSpeed * 0.10` threshold that was
-       * cutting off frames near zero velocity.
-       *
-       * Previously:
-       *   if (f.velocitySmoothed < candidate.peakSpeed * 0.10) → rest
-       *
-       * This caused the velocity lines to stop before reaching zero,
-       * creating a gap around the zero crossing on the chart.
-       *
-       * Now we label every frame in the rep window by direction only.
-       * If there is no direction (dir === 0), mark as rest.
-       * This allows the lines to smoothly approach and cross zero.
-       */
-      if (dir === 0) {
-        f.repIndex = repIdx;
-        f.phase    = lastDir === 1 ? "eccentric" : "concentric";
-      } else {
-        lastDir = dir;
-        f.repIndex = repIdx;
-        f.phase    = dir === 1 ? "eccentric" : "concentric";
+      // Are we inside the clean primary hump of the first segment?
+      const inFirstHump = i >= cleanStart && i <= cleanMid1;
+      // Are we inside the clean primary hump of the second segment?
+      const inSecondHump = i >= cleanMid2 && i <= cleanEnd;
+
+      if (!inFirstHump && !inSecondHump) {
+        f.phase = "rest";
+        f.repIndex = null;
+        continue;
       }
+
+      if (dir === 0) {
+        f.phase = "rest";
+        f.repIndex = null;
+        continue;
+      }
+
+      f.repIndex = repIdx;
+      // Video coordinates: y increases downward.
+      // dir === 1 means bar moving DOWN = eccentric
+      // dir === -1 means bar moving UP = concentric
+      f.phase = dir === 1 ? "eccentric" : "concentric";
     }
   });
 
   cleanTinyPhaseRuns(result);
-
-  
   return result;
 }
 

@@ -139,7 +139,7 @@ export default function RepTable({ stats, calibration }: Props) {
         <div className="flex items-center gap-2 bg-purple-500/10 border border-purple-500/20 rounded-xl px-4 py-2 text-xs text-purple-400">
           <span>⏸</span>
           <span>
-            Pause bench detected — pause durations shown in the{" "}
+            Pauses detected — pause durations shown in the{" "}
             <strong>Pause</strong> column and shaded on the velocity chart.
           </span>
         </div>
