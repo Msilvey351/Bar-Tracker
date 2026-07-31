@@ -106,7 +106,7 @@ export default function UploadStep({ onFileAccepted }: Props) {
               {
                 step: "1",
                 title: "Upload",
-                desc:  "Drop any MP4 or MOV video filmed side-on.",
+                desc:  "Drop any MP4 or MOV video filmed side-on. Trim the video to include only the set. ",
               },
               {
                 step: "2",

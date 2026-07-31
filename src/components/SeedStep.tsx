@@ -12,7 +12,7 @@ type ClickStep = "bar" | "plateTop" | "plateBottom" | "done";
 
 const STEP_CONFIG: Record<ClickStep, { label: string; colour: string; hint: string }> = {
   bar: {
-    label:  "Step 1 of 3 — Position the crosshair on the bar end",
+    label:  "Step 1 of 3 — Position the crosshair on the weights",
     colour: "#f97316",
     hint:   "Drag to move · tap Confirm when centred on the barbell sleeve",
   },
