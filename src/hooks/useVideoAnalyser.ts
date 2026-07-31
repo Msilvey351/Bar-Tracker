@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AnalysisResult, FrameResult, Point } from "@/types";
+import { seekVideo, waitUntilReady } from "@/lib/seekVideo";
 
 interface UseVideoAnalyserReturn {
   analyse:       (file: File, seed: Point) => Promise<void>;
@@ -15,6 +16,8 @@ interface UseVideoAnalyserReturn {
 }
 
 const SCALED_WIDTH             = 320;
+const MAX_JUMP_HEIGHT_FRACTION = 0.18;
+const MIN_MAX_JUMP_PX          = 20;
 const SMOOTHING_WINDOW         = 3;
 
 const isMobile = typeof navigator !== "undefined" &&
@@ -24,6 +27,12 @@ function chooseAnalysisFps(durationSeconds: number): number {
   if (durationSeconds <= 25) return 60;
   if (durationSeconds <= 60) return 30;
   return 24;
+}
+
+function distance(a: Point, b: Point): number {
+  const dx = a.x - b.x;
+  const dy = a.y - b.y;
+  return Math.sqrt(dx * dx + dy * dy);
 }
 
 function medianOf(values: number[]): number {
@@ -217,6 +226,22 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
 
       workerRef.current = freshWorker;
 
+      // Wait for WASM to load completely before sending messages
+      await new Promise<void>((resolve) => {
+        const handler = (e: MessageEvent) => {
+          if (e.data?.type === "ack") {
+            freshWorker.removeEventListener("message", handler);
+            resolve();
+          }
+        };
+        freshWorker.addEventListener("message", handler);
+        // Safety timeout
+        setTimeout(() => {
+          freshWorker.removeEventListener("message", handler);
+          resolve();
+        }, 3000);
+      });
+
       const video = document.createElement("video");
       video.muted       = true;
       video.playsInline = true;
@@ -248,7 +273,8 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
         });
 
         const duration    = video.duration;
-        const approximateFps = chooseAnalysisFps(duration); 
+        const fps         = chooseAnalysisFps(duration); 
+        const totalFrames = Math.floor(duration * fps);
         
         const videoWidth  = video.videoWidth;
         const videoHeight = video.videoHeight;
@@ -260,7 +286,7 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
         const ctx = canvas.getContext("2d", { willReadFrequently: true });
         if (!ctx) throw new Error("Could not get canvas context");
 
-        setLiveFps(approximateFps);
+        setLiveFps(fps);
         setLiveVideoDims({ width: videoWidth, height: videoHeight });
 
         let currentPoint: Point = { x: seed.x * scale, y: seed.y * scale };
@@ -268,111 +294,61 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
         await workerInit(SCALED_WIDTH, scaledH);
 
         const allFrames: FrameResult[] = [];
-        let seeded = false;
-        let framesProcessed = 0;
-        let lastProcessedTime = -1;
+
+        video.pause();
+        await seekVideo(video, 0);
         
-        // Fast hardware-synced playback loop
-        await new Promise<void>((resolve, reject) => {
-          
-          let safetyTimeout: NodeJS.Timeout;
-          let isFinished = false;
+        // Wait briefly for the frame to paint after seeking
+        await new Promise(r => setTimeout(r, 100));
 
-          const finish = () => {
-             if (isFinished) return;
-             isFinished = true;
-             clearTimeout(safetyTimeout);
-             video.pause();
-             resolve();
-          };
+        // Capture First Frame
+        ctx.drawImage(video, 0, 0, SCALED_WIDTH, scaledH);
+        const firstImageData = ctx.getImageData(0, 0, SCALED_WIDTH, scaledH);
 
-          // Native video ended event guarantees we are done
-          video.addEventListener("ended", finish, { once: true });
+        // Seed Worker
+        await workerSeed(currentPoint.x, currentPoint.y, firstImageData);
 
-          const processNextFrame = async (now: number, metadata: VideoFrameCallbackMetadata) => {
-            if (abortRef.current?.signal.aborted || isFinished) {
-              finish();
-              return;
-            }
+        allFrames.push({
+          frameIndex: 0,
+          timeSeconds: 0,
+          position: { x: seed.x, y: seed.y },
+        });
 
-            clearTimeout(safetyTimeout);
+        // Deterministic Seek Loop
+        for (let fi = 1; fi < totalFrames; fi++) {
+            if (abortRef.current?.signal.aborted) break;
 
-            const currentTime = metadata.mediaTime;
+            const t = fi / fps;
+            if (t > duration) break;
+
+            await seekVideo(video, t);
             
-            // The browser sometimes fires callbacks for the same frame twice.
-            if (currentTime === lastProcessedTime) {
-               if (!video.ended && !video.paused) {
-                 video.requestVideoFrameCallback(processNextFrame);
-               } else {
-                 finish();
-               }
-               return;
-            }
-            lastProcessedTime = currentTime;
-
-            // Draw and capture
             ctx.drawImage(video, 0, 0, SCALED_WIDTH, scaledH);
             const imageData = ctx.getImageData(0, 0, SCALED_WIDTH, scaledH);
 
-            if (!seeded) {
-              await workerSeed(currentPoint.x, currentPoint.y, imageData);
-              seeded = true;
-              allFrames.push({
-                frameIndex: 0,
-                timeSeconds: currentTime,
-                position: { x: seed.x, y: seed.y },
-              });
-            } else {
-              const { newPoint, frameResult } = await processFrame(
+            const { newPoint, frameResult } = await processFrame(
                 imageData,
-                currentTime,
-                framesProcessed,
+                t,
+                fi,
                 scale,
                 currentPoint
-              );
+            );
 
-              currentPoint = newPoint;
-              allFrames.push(frameResult);
+            currentPoint = newPoint;
+            allFrames.push(frameResult);
+
+            if (fi % 10 === 0) {
+               setProgress(Math.round((fi / totalFrames) * 100));
             }
-
-            framesProcessed++;
-            if (framesProcessed % 10 === 0) {
-               setProgress(Math.round((currentTime / duration) * 100));
-            }
-
-            // Standard termination check
-            if (!video.ended && currentTime < duration - 0.05) {
-               if (video.paused) video.play().catch(reject);
-               
-               // Set a safety timeout. If the browser hangs at the end of the video
-               // and never fires another frame callback, we kill the loop and resolve.
-               safetyTimeout = setTimeout(() => {
-                  console.log("Safety timeout hit - ending loop early.");
-                  finish();
-               }, 500);
-
-               video.requestVideoFrameCallback(processNextFrame);
-            } else {
-               finish();
-            }
-          };
-
-          // Start the loop
-          video.currentTime = 0;
-          video.requestVideoFrameCallback(processNextFrame);
-          video.play().catch(reject);
-        });
+        }
 
         // ── Smooth and emit final result ─────────────────────────────────────────
         const smoothed = smoothPositions(allFrames);
         setLiveFrames(smoothed);
 
-        // Recalculate true FPS based on how many frames we actually got
-        const trueFps = allFrames.length / duration;
-
         setResult({
           frames: smoothed,
-          fps: trueFps,
+          fps: fps,
           videoWidth,
           videoHeight,
           durationSeconds: duration,
