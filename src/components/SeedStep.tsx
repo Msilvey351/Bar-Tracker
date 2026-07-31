@@ -35,9 +35,9 @@ const STEP_CONFIG: Record<ClickStep, { label: string; colour: string; hint: stri
 };
 
 export default function SeedStep({ file, onSeedSet }: Props) {
-  const videoRef      = useRef<HTMLVideoElement>(null);
-  const displayRef    = useRef<HTMLCanvasElement>(null);  // shown to user
-  const containerRef  = useRef<HTMLDivElement>(null);
+  const videoRef     = useRef<HTMLVideoElement>(null);
+  const displayRef   = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   const [ready,     setReady]     = useState(false);
   const [videoDims, setVideoDims] = useState({ w: 1, h: 1 });
@@ -49,13 +49,34 @@ export default function SeedStep({ file, onSeedSet }: Props) {
   const [diameter,  setDiameter]  = useState<number>(45);
 
   /**
-   * Crosshair stored in STANDARD CANVAS pixels.
-   * These map 1:1 to the display canvas, so no scaling is needed
-   * for rendering the crosshair. Conversion to video native coords
-   * only happens on Confirm via stdToVideo().
+   * Crosshair position in STANDARD CANVAS pixels (0..stdDims.width, 0..stdDims.height).
+   * Stored as a fraction so it survives stdDims changes without jumping.
+   * Rendered to CSS pixels at draw time.
    */
-  const [crosshairStd, setCrosshairStd] = useState({ x: 320, y: 320 });
+  const [crosshairFrac, setCrosshairFrac] = useState({ fx: 0.5, fy: 0.5 });
+
+  /**
+   * CSS pixel position of crosshair relative to container.
+   * Updated via state so React re-renders the crosshair correctly.
+   */
+  const [crosshairCss, setCrosshairCss] = useState({ x: 0, y: 0 });
+
   const draggingRef = useRef(false);
+
+  // ── Update crosshair CSS position from fraction ───────────────────────────
+  const updateCrosshairCss = useCallback((fx: number, fy: number) => {
+    const canvas    = displayRef.current;
+    const container = containerRef.current;
+    if (!canvas || !container) return;
+
+    const canvasRect    = canvas.getBoundingClientRect();
+    const containerRect = container.getBoundingClientRect();
+
+    setCrosshairCss({
+      x: (canvasRect.left - containerRect.left) + fx * canvasRect.width,
+      y: (canvasRect.top  - containerRect.top)  + fy * canvasRect.height,
+    });
+  }, []);
 
   // ── Load video, draw first frame to standardised canvas ───────────────────
   useEffect(() => {
@@ -68,7 +89,7 @@ export default function SeedStep({ file, onSeedSet }: Props) {
     video.preload     = "auto";
     video.playsInline = true;
 
-    const onMeta = () => { video.currentTime = 0; };
+    const onMeta   = () => { video.currentTime = 0; };
 
     const onSeeked = () => {
       const vw  = video.videoWidth;
@@ -78,7 +99,6 @@ export default function SeedStep({ file, onSeedSet }: Props) {
       setVideoDims({ w: vw, h: vh });
       setStdDims(std);
 
-      // Draw first frame to the standardised display canvas
       const canvas = displayRef.current;
       if (!canvas) return;
       canvas.width  = std.width;
@@ -86,9 +106,13 @@ export default function SeedStep({ file, onSeedSet }: Props) {
       const ctx = canvas.getContext("2d");
       ctx?.drawImage(video, 0, 0, std.width, std.height);
 
-      // Start crosshair in the centre
-      setCrosshairStd({ x: std.width / 2, y: std.height / 2 });
+      setCrosshairFrac({ fx: 0.5, fy: 0.5 });
       setReady(true);
+
+      // Update crosshair CSS after a paint cycle
+      requestAnimationFrame(() => {
+        updateCrosshairCss(0.5, 0.5);
+      });
     };
 
     video.addEventListener("loadedmetadata", onMeta);
@@ -100,29 +124,25 @@ export default function SeedStep({ file, onSeedSet }: Props) {
       video.removeEventListener("loadedmetadata", onMeta);
       video.removeEventListener("seeked",         onSeeked);
     };
-  }, [file]);
+  }, [file, updateCrosshairCss]);
 
-  // ── Convert CLIENT pixel → standard canvas pixel ──────────────────────────
-  const clientToStd = useCallback((clientX: number, clientY: number) => {
+  // ── Recalculate CSS position on window resize ─────────────────────────────
+  useEffect(() => {
+    const onResize = () => updateCrosshairCss(crosshairFrac.fx, crosshairFrac.fy);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [crosshairFrac, updateCrosshairCss]);
+
+  // ── Convert CLIENT pixel → fraction ──────────────────────────────────────
+  const clientToFrac = useCallback((clientX: number, clientY: number) => {
     const canvas = displayRef.current;
-    if (!canvas) return { x: crosshairStd.x, y: crosshairStd.y };
-
-    const rect   = canvas.getBoundingClientRect();
-
-    /**
-     * The display canvas is rendered via CSS (width: 100%, height: auto).
-     * rect.width/height = CSS display size.
-     * canvas.width/height = internal standard pixel size.
-     * Scale factor converts between them.
-     */
-    const scaleX = canvas.width  / rect.width;
-    const scaleY = canvas.height / rect.height;
-
+    if (!canvas) return { fx: 0.5, fy: 0.5 };
+    const rect = canvas.getBoundingClientRect();
     return {
-      x: Math.max(0, Math.min(canvas.width,  (clientX - rect.left) * scaleX)),
-      y: Math.max(0, Math.min(canvas.height, (clientY - rect.top)  * scaleY)),
+      fx: Math.max(0, Math.min(1, (clientX - rect.left) / rect.width)),
+      fy: Math.max(0, Math.min(1, (clientY - rect.top)  / rect.height)),
     };
-  }, [crosshairStd]);
+  }, []);
 
   // ── Mouse drag ────────────────────────────────────────────────────────────
   const onMouseDownCrosshair = (e: React.MouseEvent) => {
@@ -133,7 +153,9 @@ export default function SeedStep({ file, onSeedSet }: Props) {
   useEffect(() => {
     const onMouseMove = (e: MouseEvent) => {
       if (!draggingRef.current) return;
-      setCrosshairStd(clientToStd(e.clientX, e.clientY));
+      const frac = clientToFrac(e.clientX, e.clientY);
+      setCrosshairFrac(frac);
+      updateCrosshairCss(frac.fx, frac.fy);
     };
     const onMouseUp = () => { draggingRef.current = false; };
 
@@ -143,7 +165,7 @@ export default function SeedStep({ file, onSeedSet }: Props) {
       window.removeEventListener("mousemove", onMouseMove);
       window.removeEventListener("mouseup",   onMouseUp);
     };
-  }, [clientToStd]);
+  }, [clientToFrac, updateCrosshairCss]);
 
   // ── Touch drag ────────────────────────────────────────────────────────────
   const onTouchStartCrosshair = (e: React.TouchEvent) => {
@@ -155,8 +177,10 @@ export default function SeedStep({ file, onSeedSet }: Props) {
     const onTouchMove = (e: TouchEvent) => {
       if (!draggingRef.current) return;
       e.preventDefault();
-      const t = e.touches[0];
-      setCrosshairStd(clientToStd(t.clientX, t.clientY));
+      const t    = e.touches[0];
+      const frac = clientToFrac(t.clientX, t.clientY);
+      setCrosshairFrac(frac);
+      updateCrosshairCss(frac.fx, frac.fy);
     };
     const onTouchEnd = () => { draggingRef.current = false; };
 
@@ -166,7 +190,7 @@ export default function SeedStep({ file, onSeedSet }: Props) {
       window.removeEventListener("touchmove", onTouchMove);
       window.removeEventListener("touchend",  onTouchEnd);
     };
-  }, [clientToStd]);
+  }, [clientToFrac, updateCrosshairCss]);
 
   // ── Redraw display canvas with confirmed markers ───────────────────────────
   const redraw = useCallback((
@@ -181,13 +205,10 @@ export default function SeedStep({ file, onSeedSet }: Props) {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    // Redraw the video frame
+    // Redraw video frame
     ctx.drawImage(video, 0, 0, stdDims.width, stdDims.height);
 
-    /**
-     * Confirmed points are stored in native video coords.
-     * Convert back to standard canvas coords for drawing.
-     */
+    // Convert native video coords → standard canvas coords for drawing
     const toStd = (pt: Point) => ({
       x: pt.x * (stdDims.width  / videoDims.w),
       y: pt.y * (stdDims.height / videoDims.h),
@@ -253,20 +274,13 @@ export default function SeedStep({ file, onSeedSet }: Props) {
     redraw(barPoint, plateTop, plateBot);
   }, [barPoint, plateTop, plateBot, diameter, redraw]);
 
-  // ── Confirm current crosshair position ────────────────────────────────────
+  // ── Confirm ───────────────────────────────────────────────────────────────
   const handleConfirmPosition = () => {
-    /**
-     * Convert standard canvas coords → native video coords.
-     * This is the only place coordinate conversion happens,
-     * and it is a simple linear scale — no letterbox math.
-     */
-    const videoPoint = stdToVideo(
-      crosshairStd.x,
-      crosshairStd.y,
-      stdDims,
-      videoDims.w,
-      videoDims.h
-    );
+    // Convert fraction → standard canvas pixel → native video pixel
+    const stdX = crosshairFrac.fx * stdDims.width;
+    const stdY = crosshairFrac.fy * stdDims.height;
+
+    const videoPoint = stdToVideo(stdX, stdY, stdDims, videoDims.w, videoDims.h);
 
     if (step === "bar") {
       setBarPoint(videoPoint);
@@ -278,12 +292,14 @@ export default function SeedStep({ file, onSeedSet }: Props) {
       setPlateBot(videoPoint);
       setStep("done");
     }
-    // Crosshair stays where it is — no jump
+    // Crosshair stays exactly where it is — no jump
   };
 
   // ── Reset ─────────────────────────────────────────────────────────────────
   const reset = () => {
-    setCrosshairStd({ x: stdDims.width / 2, y: stdDims.height / 2 });
+    const frac = { fx: 0.5, fy: 0.5 };
+    setCrosshairFrac(frac);
+    requestAnimationFrame(() => updateCrosshairCss(frac.fx, frac.fy));
     setBarPoint(null);
     setPlateTop(null);
     setPlateBot(null);
@@ -309,28 +325,6 @@ export default function SeedStep({ file, onSeedSet }: Props) {
   const pixelDiameter = plateTop && plateBot
     ? Math.round(Math.abs(plateBot.y - plateTop.y))
     : null;
-
-  /**
-   * Convert standard canvas pixel → CSS pixel relative to container.
-   * The display canvas is rendered at its natural aspect ratio via
-   * width: 100%, height: auto. We need to account for the CSS scale.
-   */
-  const crosshairCssPx = (() => {
-    const canvas    = displayRef.current;
-    const container = containerRef.current;
-    if (!canvas || !container) return { x: 0, y: 0 };
-
-    const canvasRect    = canvas.getBoundingClientRect();
-    const containerRect = container.getBoundingClientRect();
-
-    const cssScaleX = canvasRect.width  / stdDims.width;
-    const cssScaleY = canvasRect.height / stdDims.height;
-
-    return {
-      x: (canvasRect.left - containerRect.left) + crosshairStd.x * cssScaleX,
-      y: (canvasRect.top  - containerRect.top)  + crosshairStd.y * cssScaleY,
-    };
-  })();
 
   return (
     <div className="flex flex-col items-center gap-5">
@@ -383,12 +377,12 @@ export default function SeedStep({ file, onSeedSet }: Props) {
         )}
       </div>
 
-      {/* Display canvas + crosshair container */}
+      {/* Canvas + crosshair container */}
       <div
         ref={containerRef}
         className="relative w-full max-w-3xl rounded-xl overflow-hidden border border-white/10 bg-black select-none"
       >
-        {/* Hidden video — only used as drawImage source */}
+        {/* Hidden video — source for drawImage only */}
         <video ref={videoRef} className="hidden" playsInline muted />
 
         {!ready && (
@@ -398,15 +392,19 @@ export default function SeedStep({ file, onSeedSet }: Props) {
         )}
 
         {/*
-          The display canvas is always exactly stdDims.width × stdDims.height pixels internally.
-          CSS width: 100% scales it to fit the container.
-          No letterbox — the canvas IS the video content, nothing more.
-          Markers drawn here always match the coordinate system exactly.
+          Display canvas — always stdDims.width × stdDims.height pixels internally.
+          CSS max-height caps tall portrait videos.
+          width: 100%, height: auto preserves aspect ratio perfectly.
+          No black bars — canvas IS the video content, exactly.
         */}
         <canvas
           ref={displayRef}
           className="w-full block"
-          style={{ display: ready ? "block" : "none" }}
+          style={{
+            display:   ready ? "block" : "none",
+            maxHeight: "65vh",
+            objectFit: "contain",
+          }}
         />
 
         {/* Draggable crosshair */}
@@ -414,8 +412,8 @@ export default function SeedStep({ file, onSeedSet }: Props) {
           <div
             className="absolute z-20 pointer-events-auto"
             style={{
-              left:        crosshairCssPx.x,
-              top:         crosshairCssPx.y,
+              left:        crosshairCss.x,
+              top:         crosshairCss.y,
               transform:   "translate(-50%, -50%)",
               cursor:      "grab",
               touchAction: "none",
