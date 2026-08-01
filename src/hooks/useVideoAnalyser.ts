@@ -16,6 +16,8 @@ interface UseVideoAnalyserReturn {
 }
 
 const SCALED_WIDTH             = 320;
+const MAX_JUMP_HEIGHT_FRACTION = 0.18;
+const MIN_MAX_JUMP_PX          = 20;
 const SMOOTHING_WINDOW         = 3;
 
 const isMobile = typeof navigator !== "undefined" &&
@@ -156,6 +158,7 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
     [workerSend]
   );
 
+  // ── Process one tracked frame ─────────────────────────────────────────────
   const processFrame = useCallback(
     async (
       imageData:     ImageData,
@@ -285,7 +288,8 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
          * we use the blazing fast hardware playback loop.
          * If it does not (Firefox, older Safari), we fall back to the ultra-reliable manual seek loop.
          */
-        const supportsRVFC = "requestVideoFrameCallback" in HTMLVideoElement.prototype;
+        // Use an explicit type cast to bypass TypeScript's control flow narrowing issues
+        const supportsRVFC = typeof (video as any).requestVideoFrameCallback === "function";
         let finalFps = targetFps;
 
         if (supportsRVFC) {
@@ -305,8 +309,6 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
                video.pause();
                resolve();
             };
-
-            video.addEventListener("ended", finish, { once: true });
 
             const processNextFrame = async (now: number, metadata: VideoFrameCallbackMetadata) => {
               if (abortRef.current?.signal.aborted || isFinished) {
@@ -419,6 +421,9 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
             if (t > duration) break;
 
             await seekVideo(video, t);
+            
+            // 🔥 The Firefox Fix: Give the browser a tick to paint the new frame to the video texture
+            await new Promise(r => setTimeout(r, 20)); 
             
             ctx.drawImage(video, 0, 0, SCALED_WIDTH, scaledH);
             const imageData = ctx.getImageData(0, 0, SCALED_WIDTH, scaledH);
