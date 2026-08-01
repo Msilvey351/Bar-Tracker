@@ -253,7 +253,8 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
       let url: string | null = null;
 
       try {
-        url = URL.createObjectURL(file);
+        const safeFile = file.type === "" ? new Blob([file], { type: "video/mp4" }) : file;
+        url = URL.createObjectURL(safeFile);
         video.src = url;
 
         await new Promise<void>((resolve, reject) => {

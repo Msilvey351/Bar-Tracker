@@ -16,10 +16,24 @@ export default function UploadStep({ onFileAccepted }: Props) {
 
   const handleFile = useCallback(
     (file: File) => {
-      if (!ACCEPTED.includes(file.type) && !file.name.match(/\.(mp4|webm|mov|avi)$/i)) {
-        setErr("Please upload a video file (MP4, WebM, MOV, AVI). Trim the video to include only the lift. ");
-        return;
+      console.log("Uploaded file details:", {
+        name: file.name,
+        type: file.type,
+        size: `${(file.size / 1024 / 1024).toFixed(2)} MB`
+      });
+
+      const hasVideoExt = file.name.match(/\.(mp4|webm|mov|avi)$/i);
+      
+      // If the browser attached a MIME type, check it.
+      // If the OS stripped the MIME type (type === ""), but it has a video extension, allow it.
+      if (!ACCEPTED.includes(file.type) && !hasVideoExt) {
+        // Only reject if we are certain it's not a video
+        if (file.type && !file.type.startsWith("video/")) {
+           setErr(`Unsupported file type: ${file.type || "unknown"}. Please upload a video file. Trim the video to include only the lift.`);
+           return;
+        }
       }
+      
       setErr(null);
       onFileAccepted(file);
     },
@@ -77,7 +91,8 @@ export default function UploadStep({ onFileAccepted }: Props) {
           <input
             id="video-upload"
             type="file"
-            accept="video/*"
+            // Force Android to show the Gallery picker instead of the generic File picker
+            accept="video/*,.mp4,.mov,.webm,.avi"
             className="hidden"
             onChange={onInputChange}
           />
@@ -106,7 +121,7 @@ export default function UploadStep({ onFileAccepted }: Props) {
               {
                 step: "1",
                 title: "Upload",
-                desc:  "Drop any MP4 or MOV video filmed side-on. Trim the video to include only the set. ",
+                desc:  "Drop any MP4 or MOV video filmed side-on. Trim the video to include only the set.",
               },
               {
                 step: "2",
