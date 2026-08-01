@@ -17,8 +17,6 @@ interface UseVideoAnalyserReturn {
 }
 
 const SCALED_WIDTH             = 320;
-const MAX_JUMP_HEIGHT_FRACTION = 0.18;
-const MIN_MAX_JUMP_PX          = 20;
 const SMOOTHING_WINDOW         = 3;
 
 const isMobile = typeof navigator !== "undefined" &&
@@ -240,11 +238,15 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
       video.playsInline = true;
       video.preload     = "auto";
       
-      // FIREFOX FIX: Force the video to be technically visible
-      video.style.cssText = "position:fixed; bottom:10px; right:10px; width:100px; height:100px; opacity:1; z-index:9999; pointer-events:none;"
+      // FIREFOX FIX: Make the video explicitly visible to force decoding/rendering
+      video.style.cssText = "position:fixed; bottom:10px; right:10px; width:100px; height:100px; opacity:1; z-index:9999; pointer-events:none;";
       document.body.appendChild(video);
 
       const canvas = document.createElement("canvas");
+      // FIREFOX FIX 2: Attach the canvas to the DOM so it doesn't get optimized out
+      canvas.style.cssText = "position:fixed; bottom:120px; right:10px; width:100px; height:100px; z-index:9999; pointer-events:none; border:2px solid red;";
+      document.body.appendChild(canvas);
+      
       let url: string | null = null;
 
       try {
@@ -402,59 +404,88 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
           finalFps = allFrames.length / duration;
 
         } else {
-          console.log("Browser does not support RVFC (Firefox/Old Safari). Using manual seek loop.");
-          
-          const totalTargetFrames = Math.floor(duration * targetFps);
+          console.log("Browser does not support RVFC (Firefox). Using playback polling loop.");
           
           video.pause();
-          await seekVideo(video, 0);
-          await new Promise((r) => setTimeout(r, 100)); 
+          video.currentTime = 0;
+          
+          // Initial paint delay to guarantee first frame is ready
+          await new Promise((r) => setTimeout(r, 200)); 
 
           ctx.drawImage(video, 0, 0, SCALED_WIDTH, scaledH);
           const firstImageData = ctx.getImageData(0, 0, SCALED_WIDTH, scaledH);
-          
           await workerSeed(currentPoint.x, currentPoint.y, firstImageData);
           seeded = true;
-          
           allFrames.push({
             frameIndex: 0,
             timeSeconds: 0,
             position: { x: seed.x, y: seed.y },
           });
 
-          for (let fi = 1; fi < totalTargetFrames; fi++) {
-            if (abortRef.current?.signal.aborted) break;
+          let framesProcessed = 1;
+          let lastProcessedTime = -1;
 
-            const t = fi / targetFps;
-            if (t > duration) break;
+          await new Promise<void>((resolve, reject) => {
+            let isFinished = false;
+            let loopId: number;
 
-            await seekVideo(video, t);
-            
-            await new Promise((r) => setTimeout(r, 30)); 
-            
-            ctx.drawImage(video, 0, 0, SCALED_WIDTH, scaledH);
-            const imageData = ctx.getImageData(0, 0, SCALED_WIDTH, scaledH);
+            const finish = () => {
+              if (isFinished) return;
+              isFinished = true;
+              cancelAnimationFrame(loopId);
+              video.pause();
+              resolve();
+            };
 
-            // DEBUG DISPLAY
-            if (fi % 5 === 0) {
-              const cx = Math.floor(SCALED_WIDTH / 2);
-              const cy = Math.floor(scaledH / 2);
-              const idx = (cy * SCALED_WIDTH + cx) * 4;
-              setDebugMsg(`Seek Frame ${fi}: RGB(${imageData.data[idx]}, ${imageData.data[idx+1]}, ${imageData.data[idx+2]})`);
-            }
+            video.addEventListener("ended", finish, { once: true });
 
-            const { newPoint, frameResult } = await processFrame(
-                imageData, t, fi, scale, currentPoint
-            );
+            const pollNextFrame = async () => {
+              if (abortRef.current?.signal.aborted || isFinished) {
+                finish();
+                return;
+              }
 
-            currentPoint = newPoint;
-            allFrames.push(frameResult);
+              const currentTime = video.currentTime;
 
-            if (fi % 5 === 0) {
-               setProgress(Math.round((fi / totalTargetFrames) * 100));
-            }
-          }
-          finalFps = targetFps; 
+              if (currentTime > lastProcessedTime + 0.01) {
+                lastProcessedTime = currentTime;
+
+                ctx.drawImage(video, 0, 0, SCALED_WIDTH, scaledH);
+                const imageData = ctx.getImageData(0, 0, SCALED_WIDTH, scaledH);
+
+                // ─── DEBUG SAMPLING ──────────────────────────────────────────
+                if (framesProcessed % 5 === 0) {
+                  const cx = Math.floor(SCALED_WIDTH / 2);
+                  const cy = Math.floor(scaledH / 2);
+                  const idx = (cy * SCALED_WIDTH + cx) * 4;
+                  setDebugMsg(`Firefox Poll Frame ${framesProcessed}: RGB(${imageData.data[idx]}, ${imageData.data[idx+1]}, ${imageData.data[idx+2]})`);
+                }
+
+                const { newPoint, frameResult } = await processFrame(
+                  imageData, currentTime, framesProcessed, scale, currentPoint
+                );
+
+                currentPoint = newPoint;
+                allFrames.push(frameResult);
+                framesProcessed++;
+
+                if (framesProcessed % 10 === 0) {
+                  setProgress(Math.round((currentTime / duration) * 100));
+                }
+              }
+
+              if (!video.ended && currentTime < duration - 0.05) {
+                loopId = requestAnimationFrame(pollNextFrame);
+              } else {
+                finish();
+              }
+            };
+
+            video.play().catch(reject);
+            loopId = requestAnimationFrame(pollNextFrame);
+          });
+          
+          finalFps = allFrames.length / duration;
         }
 
         // ── Smooth and emit final result ─────────────────────────────────────────
@@ -475,6 +506,7 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
       } finally {
         if (url) URL.revokeObjectURL(url);
         if (document.body.contains(video)) document.body.removeChild(video);
+        if (document.body.contains(canvas)) document.body.removeChild(canvas);
         setIsAnalysing(false);
         setProgress(100);
       }
