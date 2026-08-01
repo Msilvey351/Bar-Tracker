@@ -289,9 +289,9 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
 
         const allFrames: FrameResult[] = [];
         let seeded = false;
-
+        const isFirefox = typeof navigator !== "undefined" && /Firefox/i.test(navigator.userAgent);
         // Use an explicit type cast to bypass TypeScript's control flow narrowing issues
-        const supportsRVFC = typeof (video as any).requestVideoFrameCallback === "function";
+        const supportsRVFC = !isFirefox && typeof (video as any).requestVideoFrameCallback === "function";
         let finalFps = targetFps;
 
         if (supportsRVFC) {
