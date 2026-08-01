@@ -33,13 +33,13 @@ const PATCH_RADIUS   = 12;
 const PATCH_SIZE     = (PATCH_RADIUS * 2 + 1) ** 2;
 
 /** Only accept the tracked point if it looks somewhat like the bar */
-const MIN_CONFIDENCE = 0.35; 
+const MIN_CONFIDENCE = 0.25; 
 
 /** 
  * ANTI-POISONING: Only update the reference template if it looks ALMOST EXACTLY 
  * like the original bar. If it's blurry/lagging, we track it but don't save it. 
  */
-const TEMPLATE_UPDATE_CONFIDENCE = 0.85;
+const TEMPLATE_UPDATE_CONFIDENCE = 0.50;
 
 const MAX_PIXEL_JUMP = 60; // Allowed to jump further now because of pre-search
 const EPSILON        = 0.01;
