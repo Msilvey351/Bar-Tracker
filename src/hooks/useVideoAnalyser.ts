@@ -239,15 +239,15 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
       video.preload     = "auto";
       
       // FIREFOX FIX: Make the video explicitly visible to force decoding/rendering
-      video.style.cssText = "position:fixed; bottom:10px; right:10px; width:50px; height:50px; opacity:0.1; z-index:9999; pointer-events:none;";
+      video.style.cssText = "position:fixed; top:0px; left:0px; width:100vw; height:100vh; opacity:1; z-index:-9999; pointer-events:none; object-fit:cover;";
       // FIREFOX FIX: crossOrigin is required on Firefox Android to prevent silent canvas tainting from Blob URLs.
-      video.crossOrigin = "anonymous"; 
+      //video.crossOrigin = "anonymous"; 
       
       document.body.appendChild(video);
 
       const canvas = document.createElement("canvas");
       // FIREFOX FIX: Attach the canvas to the DOM so it doesn't get optimized out
-      canvas.style.cssText = "position:fixed; bottom:70px; right:10px; width:50px; height:50px; opacity:0.1; z-index:9999; pointer-events:none;";
+      canvas.style.cssText = "display:none;"
       document.body.appendChild(canvas);
       
       let url: string | null = null;
