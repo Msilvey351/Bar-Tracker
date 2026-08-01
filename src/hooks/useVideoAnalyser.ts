@@ -241,8 +241,7 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
       video.preload     = "auto";
       
       // FIREFOX FIX: Force the video to be technically visible
-      video.style.cssText = "position:fixed; top:0; left:0; width:1px; height:1px; z-index:9999; pointer-events:none;";
-      
+      video.style.cssText = "position:fixed; bottom:10px; right:10px; width:100px; height:100px; opacity:1; z-index:9999; pointer-events:none;"
       document.body.appendChild(video);
 
       const canvas = document.createElement("canvas");
