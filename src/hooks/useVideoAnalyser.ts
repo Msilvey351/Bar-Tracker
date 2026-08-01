@@ -189,6 +189,7 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
   );
 
   // ── Main analysis entry point ─────────────────────────────────────────────
+  // ── Main analysis entry point ─────────────────────────────────────────────
   const analyse = useCallback(
     async (file: File, seed: Point) => {
       setIsAnalysing(true);
@@ -238,23 +239,19 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
       video.playsInline = true;
       video.preload     = "auto";
       
-      // FIREFOX FIX: Make the video explicitly visible to force decoding/rendering
-      video.style.cssText = "position:fixed; top:0px; left:0px; width:100vw; height:100vh; opacity:1; z-index:-9999; pointer-events:none; object-fit:cover;";
-      // FIREFOX FIX: crossOrigin is required on Firefox Android to prevent silent canvas tainting from Blob URLs.
-      //video.crossOrigin = "anonymous"; 
-      
+      // Match SeedStep exactly: display: none
+      video.style.display = "none";
       document.body.appendChild(video);
 
       const canvas = document.createElement("canvas");
-      // FIREFOX FIX: Attach the canvas to the DOM so it doesn't get optimized out
-      canvas.style.cssText = "display:none;"
-      document.body.appendChild(canvas);
-      
       let url: string | null = null;
 
       try {
+        // Force MIME type if OS stripped it
         const safeFile = file.type === "" ? new Blob([file], { type: "video/mp4" }) : file;
         url = URL.createObjectURL(safeFile);
+        
+        // NO crossorigin attribute here!
         video.src = url;
 
         await new Promise<void>((resolve, reject) => {
@@ -282,7 +279,7 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
 
         canvas.width  = SCALED_WIDTH;
         canvas.height = scaledH;
-        const ctx = canvas.getContext("2d", { willReadFrequently: true, alpha: false });
+        const ctx = canvas.getContext("2d", { willReadFrequently: true });
         if (!ctx) throw new Error("Could not get canvas context");
 
         setLiveVideoDims({ width: videoWidth, height: videoHeight });
@@ -294,8 +291,6 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
         const allFrames: FrameResult[] = [];
         let seeded = false;
 
-        // FIREFOX FIX: Firefox supports RVFC, but ctx.drawImage() fails silently inside 
-        // the callback (yields pure black). Force Firefox to use the safe polling loop.
         const isFirefox = typeof navigator !== "undefined" && /Firefox/i.test(navigator.userAgent);
         const supportsRVFC = !isFirefox && typeof (video as any).requestVideoFrameCallback === "function";
         
@@ -411,13 +406,21 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
           finalFps = allFrames.length / duration;
 
         } else {
-          console.log("Using safe playback polling loop (RVFC not supported or broken).");
-          setDebugMsg("Loop: Safe (Polling)");
+          console.log("Browser does not support RVFC (Firefox). Using manual seek loop.");
+          setDebugMsg("Loop: Seek Fallback");
+          
+          const totalTargetFrames = Math.floor(duration * targetFps);
           
           video.pause();
-          video.currentTime = 0;
           
-          await new Promise((r) => setTimeout(r, 200)); 
+          // Seed First Frame manually
+          await new Promise<void>(resolve => {
+            const onSeeked = () => { video.removeEventListener('seeked', onSeeked); resolve(); };
+            video.addEventListener('seeked', onSeeked);
+            video.currentTime = 0;
+          });
+          
+          await new Promise((r) => setTimeout(r, 50)); // Tiny paint delay
 
           ctx.drawImage(video, 0, 0, SCALED_WIDTH, scaledH);
           const firstImageData = ctx.getImageData(0, 0, SCALED_WIDTH, scaledH);
@@ -429,69 +432,46 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
             position: { x: seed.x, y: seed.y },
           });
 
-          let framesProcessed = 1;
-          let lastProcessedTime = -1;
+          // The core deterministic seek loop
+          for (let fi = 1; fi < totalTargetFrames; fi++) {
+            if (abortRef.current?.signal.aborted) break;
 
-          await new Promise<void>((resolve, reject) => {
-            let isFinished = false;
-            let loopId: number;
+            const t = fi / targetFps;
+            if (t > duration) break;
 
-            const finish = () => {
-              if (isFinished) return;
-              isFinished = true;
-              cancelAnimationFrame(loopId);
-              video.pause();
-              resolve();
-            };
+            await new Promise<void>(resolve => {
+              const onSeeked = () => { video.removeEventListener('seeked', onSeeked); resolve(); };
+              video.addEventListener('seeked', onSeeked);
+              video.currentTime = t;
+              // Safety timeout just in case seeked doesn't fire
+              setTimeout(() => { video.removeEventListener('seeked', onSeeked); resolve(); }, 200);
+            });
+            
+            // Allow Firefox to composite the frame internally
+            await new Promise((r) => setTimeout(r, 20)); 
+            
+            ctx.drawImage(video, 0, 0, SCALED_WIDTH, scaledH);
+            const imageData = ctx.getImageData(0, 0, SCALED_WIDTH, scaledH);
 
-            video.addEventListener("ended", finish, { once: true });
+            if (fi % 5 === 0) {
+              const cx = Math.floor(SCALED_WIDTH / 2);
+              const cy = Math.floor(scaledH / 2);
+              const idx = (cy * SCALED_WIDTH + cx) * 4;
+              setDebugMsg(`Seek Frame ${fi}: RGB(${imageData.data[idx]}, ${imageData.data[idx+1]}, ${imageData.data[idx+2]})`);
+            }
 
-            const pollNextFrame = async () => {
-              if (abortRef.current?.signal.aborted || isFinished) {
-                finish();
-                return;
-              }
+            const { newPoint, frameResult } = await processFrame(
+                imageData, t, fi, scale, currentPoint
+            );
 
-              const currentTime = video.currentTime;
+            currentPoint = newPoint;
+            allFrames.push(frameResult);
 
-              if (currentTime > lastProcessedTime + 0.01) {
-                lastProcessedTime = currentTime;
-
-                ctx.drawImage(video, 0, 0, SCALED_WIDTH, scaledH);
-                const imageData = ctx.getImageData(0, 0, SCALED_WIDTH, scaledH);
-
-                if (framesProcessed % 5 === 0) {
-                  const cx = Math.floor(SCALED_WIDTH / 2);
-                  const cy = Math.floor(scaledH / 2);
-                  const idx = (cy * SCALED_WIDTH + cx) * 4;
-                  setDebugMsg(`Firefox Poll Frame ${framesProcessed}: RGB(${imageData.data[idx]}, ${imageData.data[idx+1]}, ${imageData.data[idx+2]})`);
-                }
-
-                const { newPoint, frameResult } = await processFrame(
-                  imageData, currentTime, framesProcessed, scale, currentPoint
-                );
-
-                currentPoint = newPoint;
-                allFrames.push(frameResult);
-                framesProcessed++;
-
-                if (framesProcessed % 10 === 0) {
-                  setProgress(Math.round((currentTime / duration) * 100));
-                }
-              }
-
-              if (!video.ended && currentTime < duration - 0.05) {
-                loopId = requestAnimationFrame(pollNextFrame);
-              } else {
-                finish();
-              }
-            };
-
-            video.play().catch(reject);
-            loopId = requestAnimationFrame(pollNextFrame);
-          });
-          
-          finalFps = allFrames.length / duration;
+            if (fi % 5 === 0) {
+               setProgress(Math.round((fi / totalTargetFrames) * 100));
+            }
+          }
+          finalFps = targetFps; 
         }
 
         const smoothed = smoothPositions(allFrames);
@@ -511,7 +491,6 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
       } finally {
         if (url) URL.revokeObjectURL(url);
         if (document.body.contains(video)) document.body.removeChild(video);
-        if (document.body.contains(canvas)) document.body.removeChild(canvas);
         setIsAnalysing(false);
         setProgress(100);
       }
