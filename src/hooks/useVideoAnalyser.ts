@@ -170,7 +170,7 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
       frameResult: FrameResult;
     }> => {
       
-      const tracked   = await workerTrack(imageData);
+      const tracked  = await workerTrack(imageData);
       const newPoint = tracked.tracked ? { x: tracked.x, y: tracked.y } : currentPoint;
 
       return {
@@ -239,12 +239,15 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
       video.preload     = "auto";
       
       // FIREFOX FIX: Make the video explicitly visible to force decoding/rendering
-      video.style.cssText = "position:fixed; bottom:10px; right:10px; width:100px; height:100px; opacity:1; z-index:9999; pointer-events:none;";
+      video.style.cssText = "position:fixed; bottom:10px; right:10px; width:50px; height:50px; opacity:0.1; z-index:9999; pointer-events:none;";
+      // FIREFOX FIX: crossOrigin is required on Firefox Android to prevent silent canvas tainting from Blob URLs.
+      video.crossOrigin = "anonymous"; 
+      
       document.body.appendChild(video);
 
       const canvas = document.createElement("canvas");
-      // FIREFOX FIX 2: Attach the canvas to the DOM so it doesn't get optimized out
-      canvas.style.cssText = "position:fixed; bottom:120px; right:10px; width:100px; height:100px; z-index:9999; pointer-events:none; border:2px solid red;";
+      // FIREFOX FIX: Attach the canvas to the DOM so it doesn't get optimized out
+      canvas.style.cssText = "position:fixed; bottom:70px; right:10px; width:50px; height:50px; opacity:0.1; z-index:9999; pointer-events:none;";
       document.body.appendChild(canvas);
       
       let url: string | null = null;
@@ -278,7 +281,7 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
 
         canvas.width  = SCALED_WIDTH;
         canvas.height = scaledH;
-        const ctx = canvas.getContext("2d", { willReadFrequently: true });
+        const ctx = canvas.getContext("2d", { willReadFrequently: true, alpha: false });
         if (!ctx) throw new Error("Could not get canvas context");
 
         setLiveVideoDims({ width: videoWidth, height: videoHeight });
@@ -289,13 +292,17 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
 
         const allFrames: FrameResult[] = [];
         let seeded = false;
+
+        // FIREFOX FIX: Firefox supports RVFC, but ctx.drawImage() fails silently inside 
+        // the callback (yields pure black). Force Firefox to use the safe polling loop.
         const isFirefox = typeof navigator !== "undefined" && /Firefox/i.test(navigator.userAgent);
-        // Use an explicit type cast to bypass TypeScript's control flow narrowing issues
         const supportsRVFC = !isFirefox && typeof (video as any).requestVideoFrameCallback === "function";
+        
         let finalFps = targetFps;
 
         if (supportsRVFC) {
           console.log("Using fast requestVideoFrameCallback loop");
+          setDebugMsg("Loop: Fast (RVFC)");
           
           let framesProcessed = 0;
           let lastProcessedTime = -1;
@@ -333,7 +340,6 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
               ctx.drawImage(video, 0, 0, SCALED_WIDTH, scaledH);
               const imageData = ctx.getImageData(0, 0, SCALED_WIDTH, scaledH);
 
-              // DEBUG DISPLAY
               if (framesProcessed % 5 === 0) {
                 const cx = Math.floor(SCALED_WIDTH / 2);
                 const cy = Math.floor(scaledH / 2);
@@ -404,12 +410,12 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
           finalFps = allFrames.length / duration;
 
         } else {
-          console.log("Browser does not support RVFC (Firefox). Using playback polling loop.");
+          console.log("Using safe playback polling loop (RVFC not supported or broken).");
+          setDebugMsg("Loop: Safe (Polling)");
           
           video.pause();
           video.currentTime = 0;
           
-          // Initial paint delay to guarantee first frame is ready
           await new Promise((r) => setTimeout(r, 200)); 
 
           ctx.drawImage(video, 0, 0, SCALED_WIDTH, scaledH);
@@ -453,7 +459,6 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
                 ctx.drawImage(video, 0, 0, SCALED_WIDTH, scaledH);
                 const imageData = ctx.getImageData(0, 0, SCALED_WIDTH, scaledH);
 
-                // ─── DEBUG SAMPLING ──────────────────────────────────────────
                 if (framesProcessed % 5 === 0) {
                   const cx = Math.floor(SCALED_WIDTH / 2);
                   const cy = Math.floor(scaledH / 2);
@@ -488,7 +493,6 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
           finalFps = allFrames.length / duration;
         }
 
-        // ── Smooth and emit final result ─────────────────────────────────────────
         const smoothed = smoothPositions(allFrames);
         setLiveFrames(smoothed);
         setLiveFps(finalFps);
