@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AnalysisResult, FrameResult, Point } from "@/types";
+import { seekVideo } from "@/lib/seekVideo";
 
 interface UseVideoAnalyserReturn {
   analyse:       (file: File, seed: Point) => Promise<void>;
@@ -12,6 +13,7 @@ interface UseVideoAnalyserReturn {
   liveFrames:    FrameResult[];
   liveFps:       number;
   liveVideoDims: { width: number; height: number } | null;
+  debugMsg:      string;
 }
 
 const SCALED_WIDTH             = 320;
@@ -68,6 +70,7 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
   const [liveFrames,    setLiveFrames]    = useState<FrameResult[]>([]);
   const [liveFps,       setLiveFps]       = useState(0);
   const [liveVideoDims, setLiveVideoDims] = useState<{ width: number; height: number } | null>(null);
+  const [debugMsg,      setDebugMsg]      = useState<string>("");
 
   const workerRef = useRef<Worker | null>(null);
   const abortRef  = useRef<AbortController | null>(null);
@@ -196,10 +199,10 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
       setError(null);
       setLiveFrames([]);
       setLiveVideoDims(null);
+      setDebugMsg("");
 
       abortRef.current = new AbortController();
 
-      // Ensure a fresh worker for every analysis
       if (workerRef.current) {
         workerRef.current.terminate();
       }
@@ -236,7 +239,10 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
       video.muted       = true;
       video.playsInline = true;
       video.preload     = "auto";
-      video.style.cssText = "position:absolute; top:0; left:0; width:320px; height:240px; opacity:0.01; z-index:-9999; pointer-events:none;";
+      
+      // FIREFOX FIX: Force the video to be technically visible
+      video.style.cssText = "position:fixed; top:0; left:0; width:1px; height:1px; z-index:9999; pointer-events:none;";
+      
       document.body.appendChild(video);
 
       const canvas = document.createElement("canvas");
@@ -283,6 +289,7 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
         const allFrames: FrameResult[] = [];
         let seeded = false;
 
+        // Use an explicit type cast to bypass TypeScript's control flow narrowing issues
         const supportsRVFC = typeof (video as any).requestVideoFrameCallback === "function";
         let finalFps = targetFps;
 
@@ -324,6 +331,14 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
 
               ctx.drawImage(video, 0, 0, SCALED_WIDTH, scaledH);
               const imageData = ctx.getImageData(0, 0, SCALED_WIDTH, scaledH);
+
+              // DEBUG DISPLAY
+              if (framesProcessed % 5 === 0) {
+                const cx = Math.floor(SCALED_WIDTH / 2);
+                const cy = Math.floor(scaledH / 2);
+                const idx = (cy * SCALED_WIDTH + cx) * 4;
+                setDebugMsg(`RVFC Frame ${framesProcessed}: RGB(${imageData.data[idx]}, ${imageData.data[idx+1]}, ${imageData.data[idx+2]})`);
+              }
 
               if (!seeded) {
                 await workerSeed(currentPoint.x, currentPoint.y, imageData);
@@ -388,81 +403,59 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
           finalFps = allFrames.length / duration;
 
         } else {
-          console.log("Browser does not support RVFC (Firefox). Using playback polling loop.");
+          console.log("Browser does not support RVFC (Firefox/Old Safari). Using manual seek loop.");
+          
+          const totalTargetFrames = Math.floor(duration * targetFps);
           
           video.pause();
-          video.currentTime = 0;
-          
-          // Initial paint delay to guarantee first frame is ready
-          await new Promise((r) => setTimeout(r, 200)); 
+          await seekVideo(video, 0);
+          await new Promise((r) => setTimeout(r, 100)); 
 
           ctx.drawImage(video, 0, 0, SCALED_WIDTH, scaledH);
           const firstImageData = ctx.getImageData(0, 0, SCALED_WIDTH, scaledH);
+          
           await workerSeed(currentPoint.x, currentPoint.y, firstImageData);
           seeded = true;
+          
           allFrames.push({
             frameIndex: 0,
             timeSeconds: 0,
             position: { x: seed.x, y: seed.y },
           });
 
-          let framesProcessed = 1;
-          let lastProcessedTime = -1;
+          for (let fi = 1; fi < totalTargetFrames; fi++) {
+            if (abortRef.current?.signal.aborted) break;
 
-          await new Promise<void>((resolve, reject) => {
-            let isFinished = false;
-            let loopId: number;
+            const t = fi / targetFps;
+            if (t > duration) break;
 
-            const finish = () => {
-              if (isFinished) return;
-              isFinished = true;
-              cancelAnimationFrame(loopId);
-              video.pause();
-              resolve();
-            };
+            await seekVideo(video, t);
+            
+            await new Promise((r) => setTimeout(r, 30)); 
+            
+            ctx.drawImage(video, 0, 0, SCALED_WIDTH, scaledH);
+            const imageData = ctx.getImageData(0, 0, SCALED_WIDTH, scaledH);
 
-            video.addEventListener("ended", finish, { once: true });
+            // DEBUG DISPLAY
+            if (fi % 5 === 0) {
+              const cx = Math.floor(SCALED_WIDTH / 2);
+              const cy = Math.floor(scaledH / 2);
+              const idx = (cy * SCALED_WIDTH + cx) * 4;
+              setDebugMsg(`Seek Frame ${fi}: RGB(${imageData.data[idx]}, ${imageData.data[idx+1]}, ${imageData.data[idx+2]})`);
+            }
 
-            const pollNextFrame = async () => {
-              if (abortRef.current?.signal.aborted || isFinished) {
-                finish();
-                return;
-              }
+            const { newPoint, frameResult } = await processFrame(
+                imageData, t, fi, scale, currentPoint
+            );
 
-              const currentTime = video.currentTime;
+            currentPoint = newPoint;
+            allFrames.push(frameResult);
 
-              // Only process if the video has visibly advanced
-              if (currentTime > lastProcessedTime + 0.01) {
-                lastProcessedTime = currentTime;
-
-                ctx.drawImage(video, 0, 0, SCALED_WIDTH, scaledH);
-                const imageData = ctx.getImageData(0, 0, SCALED_WIDTH, scaledH);
-
-                const { newPoint, frameResult } = await processFrame(
-                  imageData, currentTime, framesProcessed, scale, currentPoint
-                );
-
-                currentPoint = newPoint;
-                allFrames.push(frameResult);
-                framesProcessed++;
-
-                if (framesProcessed % 10 === 0) {
-                  setProgress(Math.round((currentTime / duration) * 100));
-                }
-              }
-
-              if (!video.ended && currentTime < duration - 0.05) {
-                loopId = requestAnimationFrame(pollNextFrame);
-              } else {
-                finish();
-              }
-            };
-
-            video.play().catch(reject);
-            loopId = requestAnimationFrame(pollNextFrame);
-          });
-          
-          finalFps = allFrames.length / duration;
+            if (fi % 5 === 0) {
+               setProgress(Math.round((fi / totalTargetFrames) * 100));
+            }
+          }
+          finalFps = targetFps; 
         }
 
         // ── Smooth and emit final result ─────────────────────────────────────────
@@ -499,5 +492,6 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
     liveFrames,
     liveFps,
     liveVideoDims,
+    debugMsg,
   };
 }

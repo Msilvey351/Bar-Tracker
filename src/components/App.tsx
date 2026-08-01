@@ -7,11 +7,13 @@ import SeedStep      from "./SeedStep";
 import AnalysisStep  from "./AnalysisStep";
 import ResultsStep   from "./ResultsStep";
 import { useVideoAnalyser } from "@/hooks/useVideoAnalyser";
+import HowItWorksModal from "./HowItWorksModal";
 
 export default function App() {
   const [stage,       setStage]       = useState<AppStage>("upload");
   const [videoFile,   setVideoFile]   = useState<File | null>(null);
   const [calibration, setCalibration] = useState<CalibrationPoints | null>(null);
+  const [showHelp,    setShowHelp]    = useState(false);
 
   const {
     analyse,
@@ -22,6 +24,7 @@ export default function App() {
     liveFrames,
     liveFps,
     liveVideoDims,
+    debugMsg,
   } = useVideoAnalyser();
 
   const handleFileAccepted = (file: File) => {
@@ -48,6 +51,8 @@ export default function App() {
 
       {/* Header */}
       <header className="w-full py-4 px-6 border-b border-white/10 flex items-center gap-3">
+        {showHelp && <HowItWorksModal onClose={() => setShowHelp(false)} />}
+
         <span className="text-2xl">🏋️</span>
         <h1 className="text-xl font-bold tracking-tight text-orange-400">
           Barbell Tracker
@@ -59,9 +64,20 @@ export default function App() {
           </span>
         )}
 
-        <span className="ml-auto text-xs text-white/40 font-mono">
-          {stage.toUpperCase()}
-        </span>
+        <div className="ml-auto flex items-center gap-3">
+          {/* Help button — visible at every step */}
+          <button
+            onClick={() => setShowHelp(true)}
+            className="w-7 h-7 rounded-full border border-white/20 hover:border-orange-500/60 hover:bg-orange-500/10 flex items-center justify-center text-white/40 hover:text-orange-400 transition-all text-sm font-bold"
+            title="How it works"
+          >
+            ?
+          </button>
+
+          <span className="text-xs text-white/40 font-mono">
+            {stage.toUpperCase()}
+          </span>
+        </div>
       </header>
 
       {/* Step indicator */}
@@ -107,6 +123,7 @@ export default function App() {
             error={error}
             liveFrames={liveFrames}
             liveFps={liveFps}
+            debugMsg={debugMsg} // Corrected spelling here
           />
         )}
 
