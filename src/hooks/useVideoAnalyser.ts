@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AnalysisResult, FrameResult, Point } from "@/types";
-import { seekVideo } from "@/lib/seekVideo";
 
 interface UseVideoAnalyserReturn {
   analyse:       (file: File, seed: Point) => Promise<void>;
@@ -16,6 +15,8 @@ interface UseVideoAnalyserReturn {
 }
 
 const SCALED_WIDTH             = 320;
+const MAX_JUMP_HEIGHT_FRACTION = 0.18;
+const MIN_MAX_JUMP_PX          = 20;
 const SMOOTHING_WINDOW         = 3;
 
 const isMobile = typeof navigator !== "undefined" &&
@@ -198,6 +199,7 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
 
       abortRef.current = new AbortController();
 
+      // Ensure a fresh worker for every analysis
       if (workerRef.current) {
         workerRef.current.terminate();
       }
@@ -234,12 +236,7 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
       video.muted       = true;
       video.playsInline = true;
       video.preload     = "auto";
-      
-      // FIREFOX COMPATIBILITY FIX: 
-      // The video must be in the DOM, have real dimensions, and a trace of opacity.
-      // Otherwise, Firefox will not decode frames when seekVideo is called.
       video.style.cssText = "position:absolute; top:0; left:0; width:320px; height:240px; opacity:0.01; z-index:-9999; pointer-events:none;";
-      
       document.body.appendChild(video);
 
       const canvas = document.createElement("canvas");
@@ -266,6 +263,7 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
 
         const duration    = video.duration;
         const targetFps   = chooseAnalysisFps(duration); 
+        
         const videoWidth  = video.videoWidth;
         const videoHeight = video.videoHeight;
         const scale       = SCALED_WIDTH / videoWidth;
@@ -390,55 +388,84 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
           finalFps = allFrames.length / duration;
 
         } else {
-          console.log("Browser does not support RVFC (Firefox/Old Safari). Using manual seek loop.");
-          
-          const totalTargetFrames = Math.floor(duration * targetFps);
+          console.log("Browser does not support RVFC (Firefox). Using playback polling loop.");
           
           video.pause();
-          await seekVideo(video, 0);
-          await new Promise((r) => setTimeout(r, 100)); 
+          video.currentTime = 0;
+          
+          // Initial paint delay to guarantee first frame is ready
+          await new Promise((r) => setTimeout(r, 200)); 
 
           ctx.drawImage(video, 0, 0, SCALED_WIDTH, scaledH);
           const firstImageData = ctx.getImageData(0, 0, SCALED_WIDTH, scaledH);
-          
           await workerSeed(currentPoint.x, currentPoint.y, firstImageData);
           seeded = true;
-          
           allFrames.push({
             frameIndex: 0,
             timeSeconds: 0,
             position: { x: seed.x, y: seed.y },
           });
 
-          for (let fi = 1; fi < totalTargetFrames; fi++) {
-            if (abortRef.current?.signal.aborted) break;
+          let framesProcessed = 1;
+          let lastProcessedTime = -1;
 
-            const t = fi / targetFps;
-            if (t > duration) break;
+          await new Promise<void>((resolve, reject) => {
+            let isFinished = false;
+            let loopId: number;
 
-            await seekVideo(video, t);
-            
-            // FIREFOX FIX: Force a small delay after seek completes so the browser 
-            // has time to composite the new frame into the video texture.
-            await new Promise((r) => setTimeout(r, 30)); 
-            
-            ctx.drawImage(video, 0, 0, SCALED_WIDTH, scaledH);
-            const imageData = ctx.getImageData(0, 0, SCALED_WIDTH, scaledH);
+            const finish = () => {
+              if (isFinished) return;
+              isFinished = true;
+              cancelAnimationFrame(loopId);
+              video.pause();
+              resolve();
+            };
 
-            const { newPoint, frameResult } = await processFrame(
-                imageData, t, fi, scale, currentPoint
-            );
+            video.addEventListener("ended", finish, { once: true });
 
-            currentPoint = newPoint;
-            allFrames.push(frameResult);
+            const pollNextFrame = async () => {
+              if (abortRef.current?.signal.aborted || isFinished) {
+                finish();
+                return;
+              }
 
-            if (fi % 5 === 0) {
-               setProgress(Math.round((fi / totalTargetFrames) * 100));
-            }
-          }
-          finalFps = targetFps; 
+              const currentTime = video.currentTime;
+
+              // Only process if the video has visibly advanced
+              if (currentTime > lastProcessedTime + 0.01) {
+                lastProcessedTime = currentTime;
+
+                ctx.drawImage(video, 0, 0, SCALED_WIDTH, scaledH);
+                const imageData = ctx.getImageData(0, 0, SCALED_WIDTH, scaledH);
+
+                const { newPoint, frameResult } = await processFrame(
+                  imageData, currentTime, framesProcessed, scale, currentPoint
+                );
+
+                currentPoint = newPoint;
+                allFrames.push(frameResult);
+                framesProcessed++;
+
+                if (framesProcessed % 10 === 0) {
+                  setProgress(Math.round((currentTime / duration) * 100));
+                }
+              }
+
+              if (!video.ended && currentTime < duration - 0.05) {
+                loopId = requestAnimationFrame(pollNextFrame);
+              } else {
+                finish();
+              }
+            };
+
+            video.play().catch(reject);
+            loopId = requestAnimationFrame(pollNextFrame);
+          });
+          
+          finalFps = allFrames.length / duration;
         }
 
+        // ── Smooth and emit final result ─────────────────────────────────────────
         const smoothed = smoothPositions(allFrames);
         setLiveFrames(smoothed);
         setLiveFps(finalFps);
