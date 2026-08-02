@@ -23,6 +23,9 @@ export default function App() {
     error,
     liveFrames,
     liveFps,
+    liveVideoDims,
+    fallbackVideoRef,
+    isFirefoxFallback
   } = useVideoAnalyser();
 
   const handleFileAccepted = (file: File) => {
@@ -121,6 +124,8 @@ export default function App() {
             error={error}
             liveFrames={liveFrames}
             liveFps={liveFps}
+            fallbackVideoRef={fallbackVideoRef}
+            isFirefoxFallback={isFirefoxFallback}
           />
         )}
 

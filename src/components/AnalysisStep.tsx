@@ -18,6 +18,10 @@ interface Props {
   error:       string | null;
   liveFrames:  FrameResult[];
   liveFps:     number;
+  
+  // New props for Firefox fallback
+  fallbackVideoRef: React.RefObject<HTMLVideoElement | null>;
+  isFirefoxFallback: boolean;
 }
 
 interface ChartPoint {
@@ -33,6 +37,8 @@ export default function AnalysisStep({
   error,
   liveFrames,
   liveFps,
+  fallbackVideoRef,
+  isFirefoxFallback,
 }: Props) {
 
   const chartData = useMemo((): ChartPoint[] => {
@@ -65,7 +71,7 @@ export default function AnalysisStep({
     );
   }, [chartData]);
 
-  const showChart = chartData.length >= MIN_FRAMES_TO_SHOW_CHART;
+  const showChart = chartData.length >= MIN_FRAMES_TO_SHOW_CHART && !isFirefoxFallback;
 
   return (
     <div className="flex flex-col items-center gap-8 py-8">
@@ -85,6 +91,23 @@ export default function AnalysisStep({
         </p>
       </div>
 
+      {/* FIREFOX FALLBACK UI: Show the actual video playing */}
+      {isFirefoxFallback && !error && (
+        <div className="w-full max-w-sm rounded-xl overflow-hidden border border-white/10 bg-black">
+           {/* We attach the ref here. The hook will set src and call play() */}
+           <video 
+              ref={fallbackVideoRef} 
+              playsInline 
+              muted 
+              className="w-full h-auto object-contain max-h-[40vh]" 
+           />
+           <div className="p-3 text-center bg-white/5 border-t border-white/10">
+              <p className="text-amber-400 text-xs font-semibold mb-1">⚠️ Firefox Compatibility Mode</p>
+              <p className="text-white/40 text-xs">Video must play in real-time to allow pixel extraction.</p>
+           </div>
+        </div>
+      )}
+
       {/* Progress bar */}
       {!error && (
         <div className="w-full max-w-md">
@@ -99,13 +122,12 @@ export default function AnalysisStep({
             />
           </div>
           <p className="text-white/25 text-xs text-center mt-2">
-            Processing in your browser — keep this tab open. May take 1-2 minutes depending on video length.
+            Processing in your browser — keep this tab open.  
           </p>
-
         </div>
       )}
 
-      {/* Live velocity chart */}
+      {/* Live velocity chart (Only for Chrome/Fast loops) */}
       {!error && showChart && (
         <div className="w-full max-w-3xl bg-white/5 border border-white/10 rounded-xl p-4">
           <div className="flex items-center justify-between mb-3">
