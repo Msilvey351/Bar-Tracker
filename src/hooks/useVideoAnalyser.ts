@@ -219,6 +219,10 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
 
       try {
         url = URL.createObjectURL(file);
+
+        if (usingFirefoxFallback && fallbackVideoRef.current) {
+          video = fallbackVideoRef.current;
+        }
         video.src = url;
 
         await new Promise<void>((resolve, reject) => {
