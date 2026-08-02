@@ -18,10 +18,6 @@ interface Props {
   error:       string | null;
   liveFrames:  FrameResult[];
   liveFps:     number;
-  
-  // New props for Firefox fallback
-  fallbackVideoRef: React.RefObject<HTMLVideoElement | null>;
-  isFirefoxFallback: boolean;
 }
 
 interface ChartPoint {
@@ -37,8 +33,6 @@ export default function AnalysisStep({
   error,
   liveFrames,
   liveFps,
-  fallbackVideoRef,
-  isFirefoxFallback,
 }: Props) {
 
   const chartData = useMemo((): ChartPoint[] => {
@@ -71,12 +65,10 @@ export default function AnalysisStep({
     );
   }, [chartData]);
 
-  const showChart = chartData.length >= MIN_FRAMES_TO_SHOW_CHART && !isFirefoxFallback;
+  const showChart = chartData.length >= MIN_FRAMES_TO_SHOW_CHART;
 
   return (
     <div className="flex flex-col items-center gap-8 py-8">
-
-      {/* Icon + title */}
       <div className="text-center">
         <div className="text-5xl mb-3">
           {error ? "❌" : "🔬"}
@@ -91,24 +83,6 @@ export default function AnalysisStep({
         </p>
       </div>
 
-      {/* FIREFOX FALLBACK UI: Show the actual video playing */}
-      {isFirefoxFallback && !error && (
-        <div className="w-full max-w-sm rounded-xl overflow-hidden border border-white/10 bg-black">
-           {/* We attach the ref here. The hook will set src and call play() */}
-           <video 
-              ref={fallbackVideoRef} 
-              playsInline 
-              muted 
-              className="w-full h-auto object-contain max-h-[40vh]" 
-           />
-           <div className="p-3 text-center bg-white/5 border-t border-white/10">
-              <p className="text-amber-400 text-xs font-semibold mb-1">⚠️ Firefox Compatibility Mode</p>
-              <p className="text-white/40 text-xs">Video must play in real-time to allow pixel extraction.</p>
-           </div>
-        </div>
-      )}
-
-      {/* Progress bar */}
       {!error && (
         <div className="w-full max-w-md">
           <div className="flex justify-between text-sm text-white/50 mb-2">
@@ -127,7 +101,6 @@ export default function AnalysisStep({
         </div>
       )}
 
-      {/* Live velocity chart (Only for Chrome/Fast loops) */}
       {!error && showChart && (
         <div className="w-full max-w-3xl bg-white/5 border border-white/10 rounded-xl p-4">
           <div className="flex items-center justify-between mb-3">
@@ -147,66 +120,14 @@ export default function AnalysisStep({
               data={chartData}
               margin={{ top: 4, right: 8, bottom: 12, left: 8 }}
             >
-              <CartesianGrid
-                strokeDasharray="3 3"
-                stroke="rgba(255,255,255,0.05)"
-              />
-
-              <XAxis
-                dataKey="time"
-                stroke="rgba(255,255,255,0.15)"
-                tick={{ fontSize: 9, fill: "rgba(255,255,255,0.25)" }}
-                label={{
-                  value:    "Time (s)",
-                  position: "insideBottom",
-                  offset:   -6,
-                  fill:     "rgba(255,255,255,0.25)",
-                  fontSize: 10,
-                }}
-              />
-
-              <YAxis
-                stroke="rgba(255,255,255,0.15)"
-                tick={{ fontSize: 9, fill: "rgba(255,255,255,0.25)" }}
-                domain={[-Math.ceil(maxV * 1.3), Math.ceil(maxV * 1.3)]}
-                tickFormatter={(v: number) => {
-                  const abs = Math.abs(v);
-                  return v > 0 ? `+${abs}` : v < 0 ? `−${abs}` : "0";
-                }}
-              />
-
-              {/* Zero line */}
-              <ReferenceLine
-                y={0}
-                stroke="rgba(255,255,255,0.2)"
-                strokeWidth={1}
-              />
-
-              {/* Concentric — orange */}
-              <Line
-                type="monotone"
-                dataKey="concentric"
-                stroke="#f97316"
-                dot={false}
-                strokeWidth={2}
-                connectNulls={false}
-                isAnimationActive={false}
-              />
-
-              {/* Eccentric — blue */}
-              <Line
-                type="monotone"
-                dataKey="eccentric"
-                stroke="#3b82f6"
-                dot={false}
-                strokeWidth={2}
-                connectNulls={false}
-                isAnimationActive={false}
-              />
-
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+              <XAxis dataKey="time" stroke="rgba(255,255,255,0.15)" tick={{ fontSize: 9, fill: "rgba(255,255,255,0.25)" }} />
+              <YAxis stroke="rgba(255,255,255,0.15)" tick={{ fontSize: 9, fill: "rgba(255,255,255,0.25)" }} domain={[-Math.ceil(maxV * 1.3), Math.ceil(maxV * 1.3)]} tickFormatter={(v) => v > 0 ? `+${Math.abs(v)}` : v < 0 ? `−${Math.abs(v)}` : "0"} />
+              <ReferenceLine y={0} stroke="rgba(255,255,255,0.2)" strokeWidth={1} />
+              <Line type="monotone" dataKey="concentric" stroke="#f97316" dot={false} strokeWidth={2} isAnimationActive={false} />
+              <Line type="monotone" dataKey="eccentric" stroke="#3b82f6" dot={false} strokeWidth={2} isAnimationActive={false} />
             </ComposedChart>
           </ResponsiveContainer>
-
           <p className="text-white/20 text-xs text-center mt-1">
             <span style={{ color: "#f97316" }}>■</span> Concentric &nbsp;
             <span style={{ color: "#3b82f6" }}>■</span> Eccentric &nbsp;
@@ -214,7 +135,6 @@ export default function AnalysisStep({
           </p>
         </div>
       )}
-
     </div>
   );
 }
