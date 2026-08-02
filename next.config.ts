@@ -13,7 +13,7 @@ const nextConfig: NextConfig = {
           },
           {
             key: "Cross-Origin-Embedder-Policy",
-            value: "credentialless",  // ← changed from "require-corp"
+            value: "credentialless",
           },
         ],
       },
