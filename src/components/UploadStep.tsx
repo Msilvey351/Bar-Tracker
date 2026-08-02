@@ -16,18 +16,9 @@ export default function UploadStep({ onFileAccepted }: Props) {
 
   const handleFile = useCallback(
     (file: File) => {
-      console.log("Uploaded file details:", {
-        name: file.name,
-        type: file.type,
-        size: `${(file.size / 1024 / 1024).toFixed(2)} MB`
-      });
-
       const hasVideoExt = file.name.match(/\.(mp4|webm|mov|avi)$/i);
       
-      // If the browser attached a MIME type, check it.
-      // If the OS stripped the MIME type (type === ""), but it has a video extension, allow it.
       if (!ACCEPTED.includes(file.type) && !hasVideoExt) {
-        // Only reject if we are certain it's not a video
         if (file.type && !file.type.startsWith("video/")) {
            setErr(`Unsupported file type: ${file.type || "unknown"}. Please upload a video file. Trim the video to include only the lift.`);
            return;
@@ -73,11 +64,11 @@ export default function UploadStep({ onFileAccepted }: Props) {
           onDragLeave={() => setDragging(false)}
           onDrop={onDrop}
           className={`
-            w-full max-w-lg h-56 rounded-2xl border-2 border-dashed flex flex-col items-center
-            justify-center gap-4 cursor-pointer transition-all select-none
+            w-full max-w-lg h-56 rounded-2xl border-2 flex flex-col items-center
+            justify-center gap-4 transition-all select-none
             ${dragging
-              ? "border-orange-400 bg-orange-500/10"
-              : "border-white/20 bg-white/5 hover:border-orange-500/60 hover:bg-white/10"
+                ? "border-orange-400 bg-orange-500/10 border-dashed cursor-pointer"
+                : "border-white/20 bg-white/5 hover:border-orange-500/60 hover:bg-white/10 border-dashed cursor-pointer"
             }
           `}
         >
@@ -86,12 +77,13 @@ export default function UploadStep({ onFileAccepted }: Props) {
             <p className="font-semibold text-white/90">
               Drag &amp; drop video here
             </p>
-            <p className="text-white/40 text-sm mt-1">or click to browse</p>
+            <p className="text-white/40 text-sm mt-1">
+              or click to browse
+            </p>
           </div>
           <input
             id="video-upload"
             type="file"
-            // Force Android to show the Gallery picker instead of the generic File picker
             accept="video/*,.mp4,.mov,.webm,.avi"
             className="hidden"
             onChange={onInputChange}

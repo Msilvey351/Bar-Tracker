@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AnalysisResult, FrameResult, Point } from "@/types";
-import { seekVideo } from "@/lib/seekVideo";
 
 interface UseVideoAnalyserReturn {
   analyse:       (file: File, seed: Point) => Promise<void>;
@@ -13,10 +12,11 @@ interface UseVideoAnalyserReturn {
   liveFrames:    FrameResult[];
   liveFps:       number;
   liveVideoDims: { width: number; height: number } | null;
-  debugMsg:      string;
 }
 
 const SCALED_WIDTH             = 320;
+const MAX_JUMP_HEIGHT_FRACTION = 0.18;
+const MIN_MAX_JUMP_PX          = 20;
 const SMOOTHING_WINDOW         = 3;
 
 const isMobile = typeof navigator !== "undefined" &&
@@ -68,7 +68,6 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
   const [liveFrames,    setLiveFrames]    = useState<FrameResult[]>([]);
   const [liveFps,       setLiveFps]       = useState(0);
   const [liveVideoDims, setLiveVideoDims] = useState<{ width: number; height: number } | null>(null);
-  const [debugMsg,      setDebugMsg]      = useState<string>("");
 
   const workerRef = useRef<Worker | null>(null);
   const abortRef  = useRef<AbortController | null>(null);
@@ -81,16 +80,6 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
     );
 
     workerRef.current = worker;
-
-    worker.addEventListener("message", (e) => {
-      if (e.data?.type === "log") {
-        if (e.data.level === "warn") {
-          console.warn("[worker]", ...e.data.args);
-        } else {
-          console.log("[worker]", ...e.data.args);
-        }
-      }
-    });
 
     return () => {
       worker.terminate();
@@ -170,7 +159,7 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
       frameResult: FrameResult;
     }> => {
       
-      const tracked  = await workerTrack(imageData);
+      const tracked   = await workerTrack(imageData);
       const newPoint = tracked.tracked ? { x: tracked.x, y: tracked.y } : currentPoint;
 
       return {
@@ -189,7 +178,6 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
   );
 
   // ── Main analysis entry point ─────────────────────────────────────────────
-  // ── Main analysis entry point ─────────────────────────────────────────────
   const analyse = useCallback(
     async (file: File, seed: Point) => {
       setIsAnalysing(true);
@@ -198,10 +186,10 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
       setError(null);
       setLiveFrames([]);
       setLiveVideoDims(null);
-      setDebugMsg("");
 
       abortRef.current = new AbortController();
 
+      // Ensure a fresh worker for every analysis
       if (workerRef.current) {
         workerRef.current.terminate();
       }
@@ -210,13 +198,6 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
         new URL("../workers/tracker.worker.ts", import.meta.url),
         { type: "module" }
       );
-
-      freshWorker.addEventListener("message", (e) => {
-        if (e.data?.type === "log") {
-          if (e.data.level === "warn") console.warn("[worker]", ...e.data.args);
-          else console.log("[worker]", ...e.data.args);
-        }
-      });
 
       workerRef.current = freshWorker;
 
@@ -238,20 +219,14 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
       video.muted       = true;
       video.playsInline = true;
       video.preload     = "auto";
-      
-      // Match SeedStep exactly: display: none
-      video.style.display = "none";
+      video.style.cssText = "position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;";
       document.body.appendChild(video);
 
       const canvas = document.createElement("canvas");
       let url: string | null = null;
 
       try {
-        // Force MIME type if OS stripped it
-        const safeFile = file.type === "" ? new Blob([file], { type: "video/mp4" }) : file;
-        url = URL.createObjectURL(safeFile);
-        
-        // NO crossorigin attribute here!
+        url = URL.createObjectURL(file);
         video.src = url;
 
         await new Promise<void>((resolve, reject) => {
@@ -270,7 +245,7 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
         });
 
         const duration    = video.duration;
-        const targetFps   = chooseAnalysisFps(duration); 
+        const approximateFps = chooseAnalysisFps(duration); 
         
         const videoWidth  = video.videoWidth;
         const videoHeight = video.videoHeight;
@@ -282,6 +257,7 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
         const ctx = canvas.getContext("2d", { willReadFrequently: true });
         if (!ctx) throw new Error("Could not get canvas context");
 
+        setLiveFps(approximateFps);
         setLiveVideoDims({ width: videoWidth, height: videoHeight });
 
         let currentPoint: Point = { x: seed.x * scale, y: seed.y * scale };
@@ -290,197 +266,118 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
 
         const allFrames: FrameResult[] = [];
         let seeded = false;
+        let framesProcessed = 0;
+        let lastProcessedTime = -1;
 
-        const isFirefox = typeof navigator !== "undefined" && /Firefox/i.test(navigator.userAgent);
-        const supportsRVFC = !isFirefox && typeof (video as any).requestVideoFrameCallback === "function";
+        if (typeof (video as any).requestVideoFrameCallback !== "function") {
+           throw new Error("Browser does not support hardware video processing. Please use Chrome or Safari.");
+        }
         
-        let finalFps = targetFps;
-
-        if (supportsRVFC) {
-          console.log("Using fast requestVideoFrameCallback loop");
-          setDebugMsg("Loop: Fast (RVFC)");
+        // Fast hardware-synced playback loop
+        await new Promise<void>((resolve, reject) => {
           
-          let framesProcessed = 0;
-          let lastProcessedTime = -1;
-          
-          await new Promise<void>((resolve, reject) => {
-            let safetyTimeout: NodeJS.Timeout;
-            let isFinished = false;
+          let safetyTimeout: NodeJS.Timeout;
+          let isFinished = false;
 
-            const finish = () => {
-               if (isFinished) return;
-               isFinished = true;
-               clearTimeout(safetyTimeout);
-               video.pause();
-               resolve();
-            };
+          const finish = () => {
+             if (isFinished) return;
+             isFinished = true;
+             clearTimeout(safetyTimeout);
+             video.pause();
+             resolve();
+          };
 
-            const processNextFrame = async (now: number, metadata: VideoFrameCallbackMetadata) => {
-              if (abortRef.current?.signal.aborted || isFinished) {
-                finish(); return;
-              }
-              clearTimeout(safetyTimeout);
+          video.addEventListener("ended", finish, { once: true });
 
-              const currentTime = metadata.mediaTime;
-              
-              if (currentTime === lastProcessedTime) {
-                 if (!video.ended && !video.paused) {
-                   video.requestVideoFrameCallback(processNextFrame);
-                 } else {
-                   finish();
-                 }
-                 return;
-              }
-              lastProcessedTime = currentTime;
+          const processNextFrame = async (now: number, metadata: VideoFrameCallbackMetadata) => {
+            if (abortRef.current?.signal.aborted || isFinished) {
+              finish(); return;
+            }
+            clearTimeout(safetyTimeout);
 
-              ctx.drawImage(video, 0, 0, SCALED_WIDTH, scaledH);
-              const imageData = ctx.getImageData(0, 0, SCALED_WIDTH, scaledH);
-
-              if (framesProcessed % 5 === 0) {
-                const cx = Math.floor(SCALED_WIDTH / 2);
-                const cy = Math.floor(scaledH / 2);
-                const idx = (cy * SCALED_WIDTH + cx) * 4;
-                setDebugMsg(`RVFC Frame ${framesProcessed}: RGB(${imageData.data[idx]}, ${imageData.data[idx+1]}, ${imageData.data[idx+2]})`);
-              }
-
-              if (!seeded) {
-                await workerSeed(currentPoint.x, currentPoint.y, imageData);
-                seeded = true;
-                allFrames.push({
-                  frameIndex: 0,
-                  timeSeconds: currentTime,
-                  position: { x: seed.x, y: seed.y },
-                });
-              } else {
-                const { newPoint, frameResult } = await processFrame(
-                  imageData, currentTime, framesProcessed, scale, currentPoint
-                );
-                currentPoint = newPoint;
-                allFrames.push(frameResult);
-              }
-
-              framesProcessed++;
-              if (framesProcessed % 10 === 0) {
-                 setProgress(Math.round((currentTime / duration) * 100));
-              }
-
-              if (!video.ended && currentTime < duration - 0.05) {
-                 if (video.paused && !document.hidden) video.play().catch(reject);
-                 
-                 if (!document.hidden) {
-                   safetyTimeout = setTimeout(() => {
-                      console.log("Safety timeout hit - ending loop early.");
-                      finish();
-                   }, 500);
-                 }
+            const currentTime = metadata.mediaTime;
+            
+            if (currentTime === lastProcessedTime) {
+               if (!video.ended && !video.paused) {
                  video.requestVideoFrameCallback(processNextFrame);
-              } else {
-                 finish();
-              }
-            };
-
-            const handleVisibilityChange = () => {
-               if (document.hidden) {
-                 clearTimeout(safetyTimeout);
-                 video.pause();
                } else {
-                 if (!isFinished && !video.ended && video.currentTime < duration - 0.05) {
-                   video.play().catch(console.error);
-                 }
+                 finish();
                }
-            };
-            
-            document.addEventListener("visibilitychange", handleVisibilityChange);
-            video.currentTime = 0;
-            video.requestVideoFrameCallback(processNextFrame);
-            video.play().catch(reject);
-            
-            const cleanup = () => { document.removeEventListener("visibilitychange", handleVisibilityChange); };
-            const originalFinish = finish;
-            const finishWithCleanup = () => { cleanup(); originalFinish(); }
-            
-            video.removeEventListener("ended", finish);
-            video.addEventListener("ended", finishWithCleanup, { once: true });
-          });
+               return;
+            }
+            lastProcessedTime = currentTime;
 
-          finalFps = allFrames.length / duration;
-
-        } else {
-          console.log("Browser does not support RVFC (Firefox). Using manual seek loop.");
-          setDebugMsg("Loop: Seek Fallback");
-          
-          const totalTargetFrames = Math.floor(duration * targetFps);
-          
-          video.pause();
-          
-          // Seed First Frame manually
-          await new Promise<void>(resolve => {
-            const onSeeked = () => { video.removeEventListener('seeked', onSeeked); resolve(); };
-            video.addEventListener('seeked', onSeeked);
-            video.currentTime = 0;
-          });
-          
-          await new Promise((r) => setTimeout(r, 50)); // Tiny paint delay
-
-          ctx.drawImage(video, 0, 0, SCALED_WIDTH, scaledH);
-          const firstImageData = ctx.getImageData(0, 0, SCALED_WIDTH, scaledH);
-          await workerSeed(currentPoint.x, currentPoint.y, firstImageData);
-          seeded = true;
-          allFrames.push({
-            frameIndex: 0,
-            timeSeconds: 0,
-            position: { x: seed.x, y: seed.y },
-          });
-
-          // The core deterministic seek loop
-          for (let fi = 1; fi < totalTargetFrames; fi++) {
-            if (abortRef.current?.signal.aborted) break;
-
-            const t = fi / targetFps;
-            if (t > duration) break;
-
-            await new Promise<void>(resolve => {
-              const onSeeked = () => { video.removeEventListener('seeked', onSeeked); resolve(); };
-              video.addEventListener('seeked', onSeeked);
-              video.currentTime = t;
-              // Safety timeout just in case seeked doesn't fire
-              setTimeout(() => { video.removeEventListener('seeked', onSeeked); resolve(); }, 200);
-            });
-            
-            // Allow Firefox to composite the frame internally
-            await new Promise((r) => setTimeout(r, 20)); 
-            
             ctx.drawImage(video, 0, 0, SCALED_WIDTH, scaledH);
             const imageData = ctx.getImageData(0, 0, SCALED_WIDTH, scaledH);
 
-            if (fi % 5 === 0) {
-              const cx = Math.floor(SCALED_WIDTH / 2);
-              const cy = Math.floor(scaledH / 2);
-              const idx = (cy * SCALED_WIDTH + cx) * 4;
-              setDebugMsg(`Seek Frame ${fi}: RGB(${imageData.data[idx]}, ${imageData.data[idx+1]}, ${imageData.data[idx+2]})`);
+            if (!seeded) {
+              await workerSeed(currentPoint.x, currentPoint.y, imageData);
+              seeded = true;
+              allFrames.push({
+                frameIndex: 0,
+                timeSeconds: currentTime,
+                position: { x: seed.x, y: seed.y },
+              });
+            } else {
+              const { newPoint, frameResult } = await processFrame(
+                imageData, currentTime, framesProcessed, scale, currentPoint
+              );
+              currentPoint = newPoint;
+              allFrames.push(frameResult);
             }
 
-            const { newPoint, frameResult } = await processFrame(
-                imageData, t, fi, scale, currentPoint
-            );
-
-            currentPoint = newPoint;
-            allFrames.push(frameResult);
-
-            if (fi % 5 === 0) {
-               setProgress(Math.round((fi / totalTargetFrames) * 100));
+            framesProcessed++;
+            if (framesProcessed % 10 === 0) {
+               setProgress(Math.round((currentTime / duration) * 100));
             }
-          }
-          finalFps = targetFps; 
-        }
 
+            if (!video.ended && currentTime < duration - 0.05) {
+               if (video.paused && !document.hidden) video.play().catch(reject);
+               
+               if (!document.hidden) {
+                 safetyTimeout = setTimeout(() => {
+                    finish();
+                 }, 500);
+               }
+               video.requestVideoFrameCallback(processNextFrame);
+            } else {
+               finish();
+            }
+          };
+
+          const handleVisibilityChange = () => {
+             if (document.hidden) {
+               clearTimeout(safetyTimeout);
+               video.pause();
+             } else {
+               if (!isFinished && !video.ended && video.currentTime < duration - 0.05) {
+                 video.play().catch(console.error);
+               }
+             }
+          };
+          
+          document.addEventListener("visibilitychange", handleVisibilityChange);
+          video.currentTime = 0;
+          video.requestVideoFrameCallback(processNextFrame);
+          video.play().catch(reject);
+          
+          const cleanup = () => { document.removeEventListener("visibilitychange", handleVisibilityChange); };
+          const originalFinish = finish;
+          const finishWithCleanup = () => { cleanup(); originalFinish(); }
+          
+          video.removeEventListener("ended", finish);
+          video.addEventListener("ended", finishWithCleanup, { once: true });
+        });
+
+        // ── Smooth and emit final result ─────────────────────────────────────────
         const smoothed = smoothPositions(allFrames);
         setLiveFrames(smoothed);
-        setLiveFps(finalFps);
+
+        const trueFps = allFrames.length / duration;
 
         setResult({
           frames: smoothed,
-          fps: finalFps,
+          fps: trueFps,
           videoWidth,
           videoHeight,
           durationSeconds: duration,
@@ -507,6 +404,5 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
     liveFrames,
     liveFps,
     liveVideoDims,
-    debugMsg,
   };
 }

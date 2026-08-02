@@ -18,7 +18,6 @@ interface Props {
   error:       string | null;
   liveFrames:  FrameResult[];
   liveFps:     number;
-  debugMsg?:   string;
 }
 
 interface ChartPoint {
@@ -34,14 +33,8 @@ export default function AnalysisStep({
   error,
   liveFrames,
   liveFps,
-  debugMsg,
 }: Props) {
 
-  /**
-   * Build a live velocity chart from partial tracked frames.
-   * We run buildVelocityFrames (cheap — just smoothing + diffs)
-   * but skip the expensive rep detection until analysis is complete.
-   */
   const chartData = useMemo((): ChartPoint[] => {
     if (liveFrames.length < MIN_FRAMES_TO_SHOW_CHART || liveFps === 0) {
       return [];
@@ -106,15 +99,8 @@ export default function AnalysisStep({
             />
           </div>
           <p className="text-white/25 text-xs text-center mt-2">
-            Processing in your browser — keep this tab open. May take 1-2 minutes depending on video length and browser (avoid Firefox).  
+            Processing in your browser — keep this tab open. May take 1-2 minutes depending on video length.
           </p>
-
-          {/* ─── DEBUG DISPLAY ─── */}
-          {debugMsg && (
-            <p className="text-emerald-400 text-xs text-center font-mono mt-4 border border-emerald-500/30 bg-emerald-500/10 py-1 rounded">
-              {debugMsg}
-            </p>
-          )}
 
         </div>
       )}

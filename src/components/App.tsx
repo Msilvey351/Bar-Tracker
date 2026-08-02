@@ -23,8 +23,6 @@ export default function App() {
     error,
     liveFrames,
     liveFps,
-    liveVideoDims,
-    debugMsg,
   } = useVideoAnalyser();
 
   const handleFileAccepted = (file: File) => {
@@ -123,7 +121,6 @@ export default function App() {
             error={error}
             liveFrames={liveFrames}
             liveFps={liveFps}
-            debugMsg={debugMsg} // Corrected spelling here
           />
         )}
 
