@@ -2,8 +2,6 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AnalysisResult, FrameResult, Point } from "@/types";
-import { FFmpeg } from "@ffmpeg/ffmpeg";
-import { fetchFile } from "@ffmpeg/util";
 
 interface UseVideoAnalyserReturn {
   analyse:       (file: File, seed: Point) => Promise<void>;
@@ -24,9 +22,6 @@ const SMOOTHING_WINDOW         = 3;
 
 const isMobile = typeof navigator !== "undefined" &&
   /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
-
-// Detect Firefox
-const isFirefox = typeof navigator !== "undefined" && /Firefox/i.test(navigator.userAgent);
 
 function chooseAnalysisFps(durationSeconds: number): number {
   if (durationSeconds <= 25) return 60;
@@ -78,9 +73,8 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
 
   const workerRef = useRef<Worker | null>(null);
   const abortRef  = useRef<AbortController | null>(null);
-  const ffmpegRef = useRef<FFmpeg | null>(null);
 
-  // ── Spin up Tracker Worker ───────────────────────────────────────────────
+  // ── Spin up initial worker ───────────────────────────────────────────────
   useEffect(() => {
     const worker = new Worker(
       new URL("../workers/tracker.worker.ts", import.meta.url),
@@ -192,131 +186,6 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
     [workerTrack]
   );
 
-  // ── FFmpeg Fallback Path (Firefox Only) ──────────────────────────────────
-  const analyseWithFFmpeg = async (
-    file: File,
-    seed: Point,
-    ctx: CanvasRenderingContext2D,
-    scaledW: number,
-    scaledH: number,
-    scale: number,
-    fps: number,
-    videoWidth: number,
-    videoHeight: number,
-    duration: number
-  ) => {
-    setDebugMsg("Loading FFmpeg (Firefox Fallback)...");
-    
-    if (!ffmpegRef.current) {
-        ffmpegRef.current = new FFmpeg();
-        ffmpegRef.current.on('log', ({ message }) => {
-            console.log("[FFmpeg]", message);
-        });
-    }
-    
-    const ffmpeg = ffmpegRef.current;
-    if (!ffmpeg.loaded) {
-        // Load the core libraries from CDN
-        await ffmpeg.load({
-            coreURL: "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js",
-            wasmURL: "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm",
-        });
-    }
-
-    setDebugMsg("Extracting frames. This will take a while...");
-
-    const inputName = 'input.mp4';
-    await ffmpeg.writeFile(inputName, await fetchFile(file));
-
-    // Ask FFmpeg to extract frames at the target FPS as JPEGs.
-    // -r specifies the framerate.
-    // -s specifies the scaled resolution (speeds up extraction significantly).
-    await ffmpeg.exec([
-      '-i', inputName,
-      '-r', fps.toString(),
-      '-s', `${scaledW}x${scaledH}`,
-      'frame-%04d.jpg'
-    ]);
-
-    setDebugMsg("Frames extracted. Tracking...");
-
-    await workerInit(scaledW, scaledH);
-
-    const allFrames: FrameResult[] = [];
-    let currentPoint: Point = { x: seed.x * scale, y: seed.y * scale };
-    let seeded = false;
-
-    // Read the files back from FFmpeg's virtual filesystem one by one
-    // until we hit a file that doesn't exist
-    let i = 1;
-    while (true) {
-        if (abortRef.current?.signal.aborted) break;
-
-        // FFmpeg uses 1-based padding: frame-0001.jpg
-        const frameName = `frame-${i.toString().padStart(4, '0')}.jpg`;
-        let frameData: Uint8Array;
-        
-        try {
-            frameData = await ffmpeg.readFile(frameName) as Uint8Array;
-        } catch (e) {
-            // Reached the end of the extracted frames
-            break;
-        }
-
-        // Convert the JPEG bytes into an ImageBitmap to draw to the canvas
-        const blob = new Blob([frameData as unknown as BlobPart], { type: 'image/jpeg' });
-        const imageBitmap = await createImageBitmap(blob);
-        
-        ctx.drawImage(imageBitmap, 0, 0, scaledW, scaledH);
-        const imageData = ctx.getImageData(0, 0, scaledW, scaledH);
-        
-        imageBitmap.close();
-
-        // Time calculation
-        const currentTime = (i - 1) / fps;
-
-        if (!seeded) {
-            await workerSeed(currentPoint.x, currentPoint.y, imageData);
-            seeded = true;
-            allFrames.push({
-                frameIndex: 0,
-                timeSeconds: 0, // Force 0 for the seed frame
-                position: { x: seed.x, y: seed.y },
-            });
-        } else {
-            const { newPoint, frameResult } = await processFrame(
-                imageData, currentTime, i - 1, scale, currentPoint
-            );
-            currentPoint = newPoint;
-            allFrames.push(frameResult);
-        }
-
-        // Clean up the virtual file to save memory
-        await ffmpeg.deleteFile(frameName);
-
-        if (i % 10 === 0) {
-            setProgress(Math.round(((i / fps) / duration) * 100));
-        }
-
-        i++;
-    }
-
-    // Cleanup input file
-    await ffmpeg.deleteFile(inputName);
-
-    const smoothed = smoothPositions(allFrames);
-    setLiveFrames(smoothed);
-    setLiveFps(fps);
-
-    setResult({
-        frames: smoothed,
-        fps: fps,
-        videoWidth,
-        videoHeight,
-        durationSeconds: duration,
-    });
-  };
-
   // ── Main analysis entry point ─────────────────────────────────────────────
   const analyse = useCallback(
     async (file: File, seed: Point) => {
@@ -367,7 +236,7 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
       video.playsInline = true;
       video.preload     = "auto";
       
-      // Kept hidden for Chrome/Safari. Firefox won't use this video element anyway.
+      // Kept hidden. Firefox Mobile is explicitly blocked at the upload step anyway.
       video.style.cssText = "position:fixed; top:0; left:0; width:1px; height:1px; opacity:0.01; z-index:-9999; pointer-events:none;";
       
       document.body.appendChild(video);
@@ -376,7 +245,8 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
       let url: string | null = null;
 
       try {
-        url = URL.createObjectURL(file);
+        const safeFile = file.type === "" ? new Blob([file], { type: "video/mp4" }) : file;
+        url = URL.createObjectURL(safeFile);
         video.src = url;
 
         await new Promise<void>((resolve, reject) => {
@@ -404,31 +274,22 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
 
         canvas.width  = SCALED_WIDTH;
         canvas.height = scaledH;
-        const ctx = canvas.getContext("2d", { willReadFrequently: true, alpha: false });
+        const ctx = canvas.getContext("2d", { willReadFrequently: true });
         if (!ctx) throw new Error("Could not get canvas context");
 
         setLiveVideoDims({ width: videoWidth, height: videoHeight });
 
-        // ── ROUTING LOGIC ──
-        if (isFirefox) {
-            // Firefox fails at hardware canvas extraction. Route to FFmpeg WASM.
-            await analyseWithFFmpeg(
-                file, seed, ctx, SCALED_WIDTH, scaledH, scale, targetFps, videoWidth, videoHeight, duration
-            );
-            return;
-        }
-
-        // ── CHROME / SAFARI RVFC FAST PATH ──
         let currentPoint: Point = { x: seed.x * scale, y: seed.y * scale };
+
         await workerInit(SCALED_WIDTH, scaledH);
-        
+
         const allFrames: FrameResult[] = [];
         let seeded = false;
 
         const supportsRVFC = typeof (video as any).requestVideoFrameCallback === "function";
 
         if (!supportsRVFC) {
-           throw new Error("Hardware video processing not supported. Try using Chrome.");
+           throw new Error("Hardware video processing not supported. Please use Chrome or Safari.");
         }
 
         console.log("Using fast requestVideoFrameCallback loop");
@@ -495,10 +356,7 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
                if (video.paused && !document.hidden) video.play().catch(reject);
                
                if (!document.hidden) {
-                 safetyTimeout = setTimeout(() => {
-                    console.log("Safety timeout hit - ending loop early.");
-                    finish();
-                 }, 500);
+                 safetyTimeout = setTimeout(() => { finish(); }, 500);
                }
                video.requestVideoFrameCallback(processNextFrame);
             } else {
