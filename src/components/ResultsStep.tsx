@@ -6,6 +6,9 @@ import { analyseReps } from "@/lib/repDetection";
 import VideoPlayback from "./VideoPlayback";
 import VelocityChart from "./VelocityChart";
 import RepTable      from "./RepTable";
+import AuthModal     from "./AuthModal";
+import SaveSetModal  from "./SaveSetModal";
+import { useAuth }   from "@/context/AuthContext";
 
 interface Props {
   result:      AnalysisResult;
@@ -22,7 +25,12 @@ export default function ResultsStep({
   calibration,
   onReset,
 }: Props) {
-  const [view, setView] = useState<ResultView>("table");
+  const [view,      setView]      = useState<ResultView>("table");
+  const [showAuth,  setShowAuth]  = useState(false);
+  const [showSave,  setShowSave]  = useState(false);
+  const [savedDone, setSavedDone] = useState(false);
+
+  const { user } = useAuth();
 
   const { vFrames, repStats } = useMemo(
     () => analyseReps(result.frames, result.fps, { calibration }),
@@ -34,9 +42,6 @@ export default function ResultsStep({
     { id: "chart",    label: "Velocity Chart", icon: "📈" },
     { id: "playback", label: "Video Playback", icon: "🎬" },
   ];
-
-  const expectedFrames = Math.round(result.durationSeconds * result.fps);
-  const frameRatio     = result.frames.length / expectedFrames;
 
   return (
     <div className="flex flex-col items-center gap-6">
@@ -55,15 +60,6 @@ export default function ResultsStep({
               · calibrated ({calibration.diameterCm}cm plate)
             </span>
           )}
-        </p>
-
-        {/* Debug info — frame count vs expected */}
-        <p className="text-white/20 text-xs mt-1 font-mono">
-          {result.fps}fps · expected {expectedFrames} frames ·{" "}
-          got {result.frames.length} ({(frameRatio * 100).toFixed(0)}%) ·{" "}
-          t[0]={result.frames[0]?.timeSeconds.toFixed(3)}s ·{" "}
-          t[1]={result.frames[1]?.timeSeconds.toFixed(3)}s ·{" "}
-          t[-1]={result.frames[result.frames.length - 1]?.timeSeconds.toFixed(3)}s
         </p>
       </div>
 
@@ -105,13 +101,52 @@ export default function ResultsStep({
         )}
       </div>
 
+      {/* Save Set */}
+      <div className="flex flex-col items-center gap-2 w-full max-w-md">
+        {savedDone ? (
+          <div className="w-full py-3 bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 font-semibold rounded-xl text-center text-sm">
+            ✅ Set saved to your history!
+          </div>
+        ) : user ? (
+          <button
+            onClick={() => setShowSave(true)}
+            disabled={repStats.length === 0}
+            className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-600/30 disabled:cursor-not-allowed text-white font-bold rounded-xl transition-colors"
+          >
+            💾 Save Set to History
+          </button>
+        ) : (
+          <button
+            onClick={() => setShowAuth(true)}
+            className="w-full py-3 bg-white/10 hover:bg-white/20 text-white/70 hover:text-white rounded-xl transition-colors text-sm"
+          >
+            Sign in to save this set →
+          </button>
+        )}
+      </div>
+
       {/* Reset */}
       <button
         onClick={onReset}
-        className="mt-2 px-6 py-2 rounded-xl border border-white/20 text-white/50 hover:border-white/40 hover:text-white transition-all text-sm"
+        className="px-6 py-2 rounded-xl border border-white/20 text-white/50 hover:border-white/40 hover:text-white transition-all text-sm"
       >
         ↩ Analyse Another Video
       </button>
+
+      {/* Modals */}
+      {showAuth && (
+        <AuthModal onClose={() => setShowAuth(false)} />
+      )}
+      {showSave && repStats.length > 0 && (
+        <SaveSetModal
+          repStats={repStats}
+          onClose={() => setShowSave(false)}
+          onSaved={() => {
+            setShowSave(false);
+            setSavedDone(true);
+          }}
+        />
+      )}
 
     </div>
   );
