@@ -84,19 +84,39 @@ export default function SeedStep({ file, onSeedSet }: Props) {
   useEffect(() => {
     if (!file) return;
 
-    // Use a clean URL without any JavaScript hacks
-    const url = URL.createObjectURL(file);
-    const video = videoRef.current;
-    
-    if (video) {
-      video.src = `${url}#t=0.001`; // Native HTML5 frame fetch
-    }
-    
+    let url = "";
+    let isMounted = true;
+
+    const loadVideoToMemory = async () => {
+      try {
+        // 1. Physically read the file from the Google Photos pipe into browser RAM.
+        // This completely disconnects the video from the Android file provider!
+        const buffer = await file.arrayBuffer();
+        if (!isMounted) return;
+
+        // 2. Create a brand new standalone file in the browser
+        const standaloneBlob = new Blob([buffer], { type: file.type || "video/mp4" });
+        url = URL.createObjectURL(standaloneBlob);
+
+        // 3. Assign it to the video element
+        if (videoRef.current) {
+          videoRef.current.src = `${url}#t=0.001`;
+        }
+      } catch (err) {
+        if (isMounted) setVideoError("Could not read file from device storage.");
+      }
+    };
+
+    loadVideoToMemory();
+
     return () => {
-      URL.revokeObjectURL(url);
+      isMounted = false;
+      if (url) URL.revokeObjectURL(url);
     };
   }, [file]);
 
+
+  
   // ── Center Crosshair on Load ────────────────────────────────────────────────
   useEffect(() => {
     if (!ready) return;
