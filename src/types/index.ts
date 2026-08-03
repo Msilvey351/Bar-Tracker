@@ -4,6 +4,8 @@ export interface Point {
   y: number;
 }
 
+export type LiftType = "squat" | "bench" | "deadlift";
+
 /** One tracked frame result */
 export interface FrameResult {
   frameIndex: number;

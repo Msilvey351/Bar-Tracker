@@ -4,37 +4,62 @@ import type {
   Phase,
   RepStats,
   CalibrationPoints,
+  LiftType,
 } from "@/types";
-import { isReactCompilerRequired } from "next/dist/build/swc";
 
 // ─── Public options ───────────────────────────────────────────────────────────
 
 export interface AnalyseRepOptions {
   calibration?: CalibrationPoints | null;
+  liftType?:    LiftType;
 }
 
 // ─── Tuning ───────────────────────────────────────────────────────────────────
 
-const SPEED_SMOOTH_WINDOW        = 3;
-const VY_SMOOTH_WINDOW           = 6;
-const SPEED_SMOOTH_TIME_S = 0.01;
-const VY_SMOOTH_TIME_S    = 0.02; 
+const SPEED_SMOOTH_TIME_S = 0.15;
+const VY_SMOOTH_TIME_S    = 0.25;
 
 const MOVING_FRACTION            = 0.04;
 const DIRECTION_FRACTION         = 0.06;
 const MAX_REST_GAP_FRAMES        = 5;
 const MIN_SEGMENT_FRAMES         = 5;
-const MIN_REP_FRAMES             = 14;
+const MIN_REP_FRAMES             = 10;
 const MAX_REP_FRAMES             = 180;
 const ABS_MIN_VERTICAL_RANGE_PX  = 8;
-const MIN_REP_RANGE_M            = 0.10;
-const MIN_PHASE_RANGE_M          = 0.035;
 const MIN_RANGE_VS_MEDIAN        = 0.40;
 const MIN_PEAK_VS_MEDIAN         = 0.35;
 const EDGE_TRIM_FRACTION         = 0.45;
 const MIN_PHASE_RUN_FRAMES       = 4;
 const PAUSE_VELOCITY_FRACTION    = 0.08;
 const MIN_PAUSE_DURATION_S       = 0.20;
+
+/**
+ * Per-lift minimum ROM in metres.
+ * Deadlift has the largest ROM.
+ * Bench has the smallest (shorter bar travel).
+ * Squat is in between.
+ */
+const MIN_REP_RANGE_M: Record<LiftType, number> = {
+  squat:    0.12,
+  bench:    0.08,
+  deadlift: 0.15,
+};
+
+const MIN_PHASE_RANGE_M: Record<LiftType, number> = {
+  squat:    0.04,
+  bench:    0.025,
+  deadlift: 0.05,
+};
+
+/**
+ * Expected direction of the FIRST segment of a rep.
+ *
+ * Squat / Bench: bar goes DOWN first (eccentric) → dir = +1
+ * Deadlift:      bar goes UP first  (concentric) → dir = -1
+ */
+function getExpectedFirstDir(liftType: LiftType): 1 | -1 {
+  return liftType === "deadlift" ? -1 : 1;
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -116,21 +141,22 @@ export function buildVelocityFrames(
 ): VelocityFrame[] {
   if (frames.length < 2) return [];
 
-  const dt = 1 / fps;
-
   const rawSpeed: number[] = [0];
-  const rawVY: number[] = [0];
+  const rawVY:    number[] = [0];
 
   for (let i = 1; i < frames.length; i++) {
     const dx = frames[i].position.x - frames[i - 1].position.x;
     const dy = frames[i].position.y - frames[i - 1].position.y;
 
+    // Use actual timestamp difference for accurate velocity
+    let dt = frames[i].timeSeconds - frames[i - 1].timeSeconds;
+    if (dt <= 0) dt = 1 / fps;
+
     rawSpeed.push(Math.sqrt(dx * dx + dy * dy) / dt);
     rawVY.push(dy / dt);
   }
 
-  // Calculate window sizes dynamically based on the actual FPS
-  // Ensure the window is always an odd number (required for boxSmooth center)
+  // Time-based smoothing windows
   let speedWindow = Math.max(3, Math.round(SPEED_SMOOTH_TIME_S * fps));
   if (speedWindow % 2 === 0) speedWindow++;
 
@@ -138,17 +164,17 @@ export function buildVelocityFrames(
   if (vyWindow % 2 === 0) vyWindow++;
 
   const smoothSpeed = boxSmooth(rawSpeed, speedWindow);
-  const smoothVY = boxSmooth(rawVY, vyWindow);
+  const smoothVY    = boxSmooth(rawVY,    vyWindow);
 
   return frames.map((f, i) => ({
-    frameIndex: f.frameIndex,
-    timeSeconds: f.timeSeconds,
-    position: f.position,
-    velocityRaw: rawSpeed[i],
+    frameIndex:       f.frameIndex,
+    timeSeconds:      f.timeSeconds,
+    position:         f.position,
+    velocityRaw:      rawSpeed[i],
     velocitySmoothed: smoothSpeed[i],
-    velocityY: smoothVY[i],
-    phase: "rest" as Phase,
-    repIndex: null,
+    velocityY:        smoothVY[i],
+    phase:            "rest" as Phase,
+    repIndex:         null,
   }));
 }
 
@@ -211,9 +237,7 @@ function buildMovementSegments(vFrames: VelocityFrame[]): MovementSegment[] {
       last.dir === seg.dir &&
       seg.start - last.end - 1 <= MAX_REST_GAP_FRAMES
     ) {
-      merged[merged.length - 1] = makeSegment(
-        vFrames, last.dir, last.start, seg.end
-      );
+      merged[merged.length - 1] = makeSegment(vFrames, last.dir, last.start, seg.end);
     } else {
       merged.push(seg);
     }
@@ -261,9 +285,13 @@ function buildRepCandidatesFromOffset(
 // ─── Step 4: Candidate filters ────────────────────────────────────────────────
 
 function basicFilterCandidates(
-  candidates: RepCandidate[],
-  calibration?: CalibrationPoints | null
+  candidates:  RepCandidate[],
+  calibration?: CalibrationPoints | null,
+  liftType:    LiftType = "squat"
 ): RepCandidate[] {
+  const minRepM   = MIN_REP_RANGE_M[liftType];
+  const minPhaseM = MIN_PHASE_RANGE_M[liftType];
+
   return candidates.filter((c) => {
     const frameOk =
       c.frameCount >= MIN_REP_FRAMES &&
@@ -277,9 +305,9 @@ function basicFilterCandidates(
       const secondRangeM    = pxToM(c.second.rangePx, calibration) ?? 0;
 
       return (
-        candidateRangeM >= MIN_REP_RANGE_M  &&
-        firstRangeM     >= MIN_PHASE_RANGE_M &&
-        secondRangeM    >= MIN_PHASE_RANGE_M
+        candidateRangeM >= minRepM   &&
+        firstRangeM     >= minPhaseM &&
+        secondRangeM    >= minPhaseM
       );
     }
 
@@ -288,10 +316,11 @@ function basicFilterCandidates(
 }
 
 function adaptiveFilterCandidates(
-  candidates: RepCandidate[],
-  calibration?: CalibrationPoints | null
+  candidates:  RepCandidate[],
+  calibration?: CalibrationPoints | null,
+  liftType:    LiftType = "squat"
 ): RepCandidate[] {
-  const basic = basicFilterCandidates(candidates, calibration);
+  const basic = basicFilterCandidates(candidates, calibration, liftType);
   if (!basic.length) return [];
 
   const medRange = median(basic.map((c) => c.rangePx));
@@ -327,21 +356,48 @@ function scoreCandidates(candidates: RepCandidate[]): number {
 function chooseBestRepCandidates(
   segments:    MovementSegment[],
   vFrames:     VelocityFrame[],
-  calibration?: CalibrationPoints | null
+  calibration?: CalibrationPoints | null,
+  liftType:    LiftType = "squat"
 ): RepCandidate[] {
-  const offset0 = adaptiveFilterCandidates(
-    buildRepCandidatesFromOffset(segments, 0, vFrames),
-    calibration
+  const expectedFirstDir = getExpectedFirstDir(liftType);
+
+  // Filter candidates so only those starting in the expected direction are kept
+  const filterByDirection = (candidates: RepCandidate[]) =>
+    candidates.filter((c) => c.first.dir === expectedFirstDir);
+
+  const filtered0 = filterByDirection(
+    buildRepCandidatesFromOffset(segments, 0, vFrames)
+  );
+  const filtered1 = filterByDirection(
+    buildRepCandidatesFromOffset(segments, 1, vFrames)
   );
 
-  const offset1 = adaptiveFilterCandidates(
-    buildRepCandidatesFromOffset(segments, 1, vFrames),
-    calibration
-  );
+  const offset0 = adaptiveFilterCandidates(filtered0, calibration, liftType);
+  const offset1 = adaptiveFilterCandidates(filtered1, calibration, liftType);
 
-  return scoreCandidates(offset1) > scoreCandidates(offset0)
-    ? offset1
-    : offset0;
+  const score0 = scoreCandidates(offset0);
+  const score1 = scoreCandidates(offset1);
+
+  // If direction filtering produced nothing, fall back to unfiltered
+  if (score0 === 0 && score1 === 0) {
+    console.warn("No candidates matched expected lift direction. Falling back to unfiltered.");
+
+    const fallback0 = adaptiveFilterCandidates(
+      buildRepCandidatesFromOffset(segments, 0, vFrames),
+      calibration,
+      liftType
+    );
+    const fallback1 = adaptiveFilterCandidates(
+      buildRepCandidatesFromOffset(segments, 1, vFrames),
+      calibration,
+      liftType
+    );
+    return scoreCandidates(fallback1) > scoreCandidates(fallback0)
+      ? fallback1
+      : fallback0;
+  }
+
+  return score1 > score0 ? offset1 : offset0;
 }
 
 // ─── Step 5: Edge trim rack/unrack ────────────────────────────────────────────
@@ -450,9 +506,11 @@ export function detectPhasesAndReps(
   vFrames: VelocityFrame[],
   options: AnalyseRepOptions = {}
 ): VelocityFrame[] {
+  const liftType = options.liftType ?? "squat";
+
   const result = vFrames.map((f) => ({
     ...f,
-    phase: "rest" as Phase,
+    phase:    "rest" as Phase,
     repIndex: null as number | null,
   }));
 
@@ -464,7 +522,8 @@ export function detectPhasesAndReps(
   let candidates = chooseBestRepCandidates(
     segments,
     result,
-    options.calibration
+    options.calibration,
+    liftType
   );
 
   if (!candidates.length) return result;
@@ -472,70 +531,57 @@ export function detectPhasesAndReps(
   candidates = trimEdgeCandidates(candidates);
   if (!candidates.length) return result;
 
-
   candidates.forEach((candidate, repIdx) => {
-    // ─── 1. Find the primary peaks for this specific candidate ──────────────
-    const firstFrames = result.slice(candidate.first.start, candidate.first.end + 1);
+    // Find primary peaks
+    const firstFrames  = result.slice(candidate.first.start,  candidate.first.end  + 1);
     const secondFrames = result.slice(candidate.second.start, candidate.second.end + 1);
 
-    const firstPeakIdx = candidate.first.start + firstFrames.reduce((bestIdx, f, i, arr) => 
-      f.velocitySmoothed > arr[bestIdx].velocitySmoothed ? i : bestIdx, 0);
-      
-    const secondPeakIdx = candidate.second.start + secondFrames.reduce((bestIdx, f, i, arr) => 
-      f.velocitySmoothed > arr[bestIdx].velocitySmoothed ? i : bestIdx, 0);
+    const firstPeakIdx = candidate.first.start + firstFrames.reduce((best, f, i, arr) =>
+      f.velocitySmoothed > arr[best].velocitySmoothed ? i : best, 0);
 
-    // ─── 2. Trim inwards towards the peaks ──────────────────────────────────
-    // Walk outwards from the peaks until velocity drops below a strict cutoff.
-    // This ignores secondary bounces (like bar whip) that occur at the edges.
-    const cutoffFraction = 0.15; // 15% of the peak speed cuts off the wobble
+    const secondPeakIdx = candidate.second.start + secondFrames.reduce((best, f, i, arr) =>
+      f.velocitySmoothed > arr[best].velocitySmoothed ? i : best, 0);
+
+    // Trim inwards from peaks — removes bar whip at edges
+    const cutoff = 0.15;
 
     let cleanStart = firstPeakIdx;
-    while (cleanStart > candidate.first.start && result[cleanStart].velocitySmoothed > candidate.first.peakSpeed * cutoffFraction) {
-      cleanStart--;
-    }
+    while (cleanStart > candidate.first.start  && result[cleanStart].velocitySmoothed > candidate.first.peakSpeed  * cutoff) cleanStart--;
 
     let cleanMid1 = firstPeakIdx;
-    while (cleanMid1 < candidate.first.end && result[cleanMid1].velocitySmoothed > candidate.first.peakSpeed * cutoffFraction) {
-      cleanMid1++;
-    }
+    while (cleanMid1  < candidate.first.end    && result[cleanMid1].velocitySmoothed  > candidate.first.peakSpeed  * cutoff) cleanMid1++;
 
     let cleanMid2 = secondPeakIdx;
-    while (cleanMid2 > candidate.second.start && result[cleanMid2].velocitySmoothed > candidate.second.peakSpeed * cutoffFraction) {
-      cleanMid2--;
-    }
+    while (cleanMid2  > candidate.second.start && result[cleanMid2].velocitySmoothed  > candidate.second.peakSpeed * cutoff) cleanMid2--;
 
     let cleanEnd = secondPeakIdx;
-    while (cleanEnd < candidate.second.end && result[cleanEnd].velocitySmoothed > candidate.second.peakSpeed * cutoffFraction) {
-      cleanEnd++;
-    }
+    while (cleanEnd   < candidate.second.end   && result[cleanEnd].velocitySmoothed   > candidate.second.peakSpeed * cutoff) cleanEnd++;
 
-    // ─── 3. Assign phases only within the cleaned windows ───────────────────
+    let lastDir: -1 | 1 = 1;
+
     for (let i = candidate.start; i <= candidate.end; i++) {
-      const f = result[i];
+      const f   = result[i];
       const dir = signOf(f.velocityY);
 
-      // Are we inside the clean primary hump of the first segment?
-      const inFirstHump = i >= cleanStart && i <= cleanMid1;
-      // Are we inside the clean primary hump of the second segment?
-      const inSecondHump = i >= cleanMid2 && i <= cleanEnd;
+      const inFirstHump  = i >= cleanStart && i <= cleanMid1;
+      const inSecondHump = i >= cleanMid2  && i <= cleanEnd;
 
       if (!inFirstHump && !inSecondHump) {
-        f.phase = "rest";
-        f.repIndex = null;
-        continue;
+        f.phase = "rest"; f.repIndex = null; continue;
       }
 
       if (dir === 0) {
-        f.phase = "rest";
-        f.repIndex = null;
-        continue;
+        // At zero crossing — use last known direction for smooth line
+        f.repIndex = repIdx;
+        f.phase    = lastDir === 1 ? "eccentric" : "concentric";
+      } else {
+        lastDir    = dir;
+        f.repIndex = repIdx;
+        // Video y increases downward:
+        // dir +1 = bar moving DOWN = eccentric
+        // dir -1 = bar moving UP   = concentric
+        f.phase = dir === 1 ? "eccentric" : "concentric";
       }
-
-      f.repIndex = repIdx;
-      // Video coordinates: y increases downward.
-      // dir === 1 means bar moving DOWN = eccentric
-      // dir === -1 means bar moving UP = concentric
-      f.phase = dir === 1 ? "eccentric" : "concentric";
     }
   });
 
@@ -549,7 +595,8 @@ export function filterAndRenumber(
   vFrames: VelocityFrame[],
   options: AnalyseRepOptions = {}
 ): VelocityFrame[] {
-  const result = vFrames.map((f) => ({ ...f }));
+  const liftType = options.liftType ?? "squat";
+  const result   = vFrames.map((f) => ({ ...f }));
 
   const repIndices = [
     ...new Set(
@@ -599,18 +646,14 @@ export function filterAndRenumber(
     if (!basicOk) return false;
 
     if (options.calibration && m.rangeM !== null) {
-      return m.rangeM >= MIN_REP_RANGE_M;
+      return m.rangeM >= MIN_REP_RANGE_M[liftType];
     }
 
     return m.rangePx >= ABS_MIN_VERTICAL_RANGE_PX;
   });
 
   if (!metrics.length) {
-    return result.map((f) => ({
-      ...f,
-      phase:    "rest" as Phase,
-      repIndex: null,
-    }));
+    return result.map((f) => ({ ...f, phase: "rest" as Phase, repIndex: null }));
   }
 
   const medRange = median(metrics.map((m) => m.rangePx));
@@ -623,11 +666,7 @@ export function filterAndRenumber(
   );
 
   if (!metrics.length) {
-    return result.map((f) => ({
-      ...f,
-      phase:    "rest" as Phase,
-      repIndex: null,
-    }));
+    return result.map((f) => ({ ...f, phase: "rest" as Phase, repIndex: null }));
   }
 
   const validSet = new Set(metrics.map((m) => m.idx));
@@ -655,7 +694,6 @@ interface PauseInfo {
 
 function detectPauseWithinRep(repFrames: VelocityFrame[]): PauseInfo {
   const none: PauseInfo = { duration: 0, startTime: null };
-
   if (repFrames.length < 3) return none;
 
   const peakSpeed      = Math.max(...repFrames.map((f) => f.velocitySmoothed));
@@ -666,7 +704,6 @@ function detectPauseWithinRep(repFrames: VelocityFrame[]): PauseInfo {
   for (let i = 1; i < repFrames.length; i++) {
     const prev = repFrames[i - 1].phase;
     const curr = repFrames[i].phase;
-
     if (prev !== curr && prev !== "rest" && curr !== "rest") {
       phaseTransitionIdx = i;
       break;
@@ -689,7 +726,6 @@ function detectPauseWithinRep(repFrames: VelocityFrame[]): PauseInfo {
   let pauseStartIdx = -1;
   let pauseEndIdx   = -1;
   let longestStart  = -1;
-  let longestEnd    = -1;
   let longestDur    = 0;
 
   for (let i = 0; i < gapFrames.length; i++) {
@@ -698,32 +734,16 @@ function detectPauseWithinRep(repFrames: VelocityFrame[]): PauseInfo {
       pauseEndIdx = i;
     } else {
       if (pauseStartIdx !== -1) {
-        const dur =
-          gapFrames[pauseEndIdx].timeSeconds -
-          gapFrames[pauseStartIdx].timeSeconds;
-
-        if (dur > longestDur) {
-          longestDur   = dur;
-          longestStart = pauseStartIdx;
-          longestEnd   = pauseEndIdx;
-        }
-
-        pauseStartIdx = -1;
-        pauseEndIdx   = -1;
+        const dur = gapFrames[pauseEndIdx].timeSeconds - gapFrames[pauseStartIdx].timeSeconds;
+        if (dur > longestDur) { longestDur = dur; longestStart = pauseStartIdx; }
+        pauseStartIdx = -1; pauseEndIdx = -1;
       }
     }
   }
 
   if (pauseStartIdx !== -1) {
-    const dur =
-      gapFrames[pauseEndIdx].timeSeconds -
-      gapFrames[pauseStartIdx].timeSeconds;
-
-    if (dur > longestDur) {
-      longestDur   = dur;
-      longestStart = pauseStartIdx;
-      longestEnd   = pauseEndIdx;
-    }
+    const dur = gapFrames[pauseEndIdx].timeSeconds - gapFrames[pauseStartIdx].timeSeconds;
+    if (dur > longestDur) { longestDur = dur; longestStart = pauseStartIdx; }
   }
 
   if (longestDur < MIN_PAUSE_DURATION_S || longestStart === -1) return none;
@@ -745,18 +765,12 @@ export function computeRepStats(vFrames: VelocityFrame[]): RepStats[] {
     repMap.get(f.repIndex)!.push(f);
   }
 
-  const avg = (arr: VelocityFrame[]) =>
-    arr.length
-      ? arr.reduce((sum, f) => sum + f.velocitySmoothed, 0) / arr.length
-      : 0;
-
+  const avg  = (arr: VelocityFrame[]) =>
+    arr.length ? arr.reduce((s, f) => s + f.velocitySmoothed, 0) / arr.length : 0;
   const peak = (arr: VelocityFrame[]) =>
     arr.length ? Math.max(...arr.map((f) => f.velocitySmoothed)) : 0;
-
-  const dur = (arr: VelocityFrame[]) =>
-    arr.length > 1
-      ? arr[arr.length - 1].timeSeconds - arr[0].timeSeconds
-      : 0;
+  const dur  = (arr: VelocityFrame[]) =>
+    arr.length > 1 ? arr[arr.length - 1].timeSeconds - arr[0].timeSeconds : 0;
 
   const stats: RepStats[] = [];
 
@@ -764,13 +778,7 @@ export function computeRepStats(vFrames: VelocityFrame[]): RepStats[] {
     const concFrames = frames.filter((f) => f.phase === "concentric");
     const eccFrames  = frames.filter((f) => f.phase === "eccentric");
 
-    if (
-      frames.length     < MIN_REP_FRAMES ||
-      concFrames.length === 0            ||
-      eccFrames.length  === 0
-    ) {
-      return;
-    }
+    if (frames.length < MIN_REP_FRAMES || concFrames.length === 0 || eccFrames.length === 0) return;
 
     const pauseInfo = detectPauseWithinRep(frames);
 
@@ -793,9 +801,7 @@ export function computeRepStats(vFrames: VelocityFrame[]): RepStats[] {
   const rep1Avg = stats[0]?.avgConcentricVelocity ?? 1;
   for (const s of stats) {
     s.percentSpeedDrop =
-      rep1Avg > 0
-        ? ((rep1Avg - s.avgConcentricVelocity) / rep1Avg) * 100
-        : 0;
+      rep1Avg > 0 ? ((rep1Avg - s.avgConcentricVelocity) / rep1Avg) * 100 : 0;
   }
 
   return stats;

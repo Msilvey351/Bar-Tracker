@@ -14,9 +14,6 @@ const EXERCISES = [
   "Squat",
   "Bench Press",
   "Deadlift",
-  "Overhead Press",
-  "Row",
-  "Other",
 ];
 
 const RPE_OPTIONS = [
