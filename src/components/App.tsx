@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import type { AppStage, Point, CalibrationPoints } from "@/types";
+import type { AppStage, Point, CalibrationPoints, LiftType } from "@/types";
 import UploadStep      from "./UploadStep";
 import SeedStep        from "./SeedStep";
 import AnalysisStep    from "./AnalysisStep";
@@ -16,6 +16,7 @@ export default function App() {
   const [stage,       setStage]       = useState<AppStage>("upload");
   const [videoFile,   setVideoFile]   = useState<File | null>(null);
   const [calibration, setCalibration] = useState<CalibrationPoints | null>(null);
+  const [liftType,    setLiftType]    = useState<LiftType>("squat");
   const [showHelp,    setShowHelp]    = useState(false);
   const [showAuth,    setShowAuth]    = useState(false);
   const [showHistory, setShowHistory] = useState(false);
@@ -37,9 +38,14 @@ export default function App() {
     setStage("seed");
   };
 
-  const handleSeedSet = async (point: Point, cal: CalibrationPoints) => {
+  const handleSeedSet = async (
+    point: Point,
+    cal: CalibrationPoints,
+    lift: LiftType
+  ) => {
     if (!videoFile) return;
     setCalibration(cal);
+    setLiftType(lift);
     setStage("analysing");
     await analyse(videoFile, point);
     setStage("results");
@@ -49,6 +55,7 @@ export default function App() {
     setStage("upload");
     setVideoFile(null);
     setCalibration(null);
+    setLiftType("squat");
   };
 
   return (
@@ -178,6 +185,7 @@ export default function App() {
             result={result}
             file={videoFile}
             calibration={calibration}
+            liftType={liftType}
             onReset={handleReset}
           />
         )}

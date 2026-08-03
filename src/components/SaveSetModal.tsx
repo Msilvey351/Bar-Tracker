@@ -2,35 +2,64 @@
 
 import { useState } from "react";
 import { createClient } from "@/lib/supabase/client";
-import type { RepStats } from "@/types";
+import type { RepStats, LiftType } from "@/types";
 
 interface Props {
-  repStats: RepStats[];
-  onClose:  () => void;
-  onSaved:  () => void;
+  repStats:  RepStats[];
+  liftType:  LiftType;
+  onClose:   () => void;
+  onSaved:   () => void;
 }
 
-const EXERCISES = [
-  "Squat",
-  "Bench Press",
-  "Deadlift",
+const EXERCISES: { id: string; label: string; lift: LiftType | "all" }[] = [
+  { id: "squat",          label: "Squat",          lift: "squat"    },
+  { id: "bench_press",    label: "Bench Press",    lift: "bench"    },
+  { id: "deadlift",       label: "Deadlift",       lift: "deadlift" },
+  { id: "overhead_press", label: "Overhead Press", lift: "all"      },
+  { id: "row",            label: "Row",            lift: "all"      },
+  { id: "other",          label: "Other",          lift: "all"      },
 ];
 
-const RPE_OPTIONS = [
+// Default exercise based on lift type
+function defaultExercise(liftType: LiftType): string {
+  switch (liftType) {
+    case "squat":    return "squat";
+    case "bench":    return "bench_press";
+    case "deadlift": return "deadlift";
+  }
+}
+
+const RPE_OPTIONS: { value: string; label: string }[] = [
   { value: "",    label: "— Not rated —" },
-  { value: "6",   label: "RPE 6  — Very easy" },
-  { value: "6.5", label: "RPE 6.5" },
-  { value: "7",   label: "RPE 7  — Easy" },
-  { value: "7.5", label: "RPE 7.5" },
-  { value: "8",   label: "RPE 8  — Challenging" },
-  { value: "8.5", label: "RPE 8.5" },
-  { value: "9",   label: "RPE 9  — Very hard" },
-  { value: "9.5", label: "RPE 9.5" },
-  { value: "10",  label: "RPE 10 — Max effort" },
+  { value: "10",  label: "10"  },
+  { value: "9.5", label: "9.5" },
+  { value: "9",   label: "9"   },
+  { value: "8.5", label: "8.5" },
+  { value: "8",   label: "8"   },
+  { value: "7.5", label: "7.5" },
+  { value: "7",   label: "7"   },
+  { value: "6.5", label: "6.5" },
+  { value: "6",   label: "6"   },
+  { value: "5.5", label: "5.5" },
+  { value: "5",   label: "5"   },
+  { value: "4.5", label: "4.5" },
+  { value: "4",   label: "4"   },
+  { value: "3.5", label: "3.5" },
+  { value: "3",   label: "3"   },
+  { value: "2.5", label: "2.5" },
+  { value: "2",   label: "2"   },
+  { value: "1.5", label: "1.5" },
+  { value: "1",   label: "1"   },
 ];
 
-export default function SaveSetModal({ repStats, onClose, onSaved }: Props) {
-  const [exercise, setExercise] = useState("Squat");
+const selectClass = `
+  w-full bg-[#1a1a1a] border border-white/10 rounded-xl px-4 py-3
+  text-white focus:outline-none focus:border-orange-500 transition-colors
+  appearance-none cursor-pointer
+`;
+
+export default function SaveSetModal({ repStats, liftType, onClose, onSaved }: Props) {
+  const [exercise, setExercise] = useState(defaultExercise(liftType));
   const [weightKg, setWeightKg] = useState<string>("");
   const [rpe,      setRpe]      = useState<string>("");
   const [notes,    setNotes]    = useState("");
@@ -86,10 +115,10 @@ export default function SaveSetModal({ repStats, onClose, onSaved }: Props) {
       .from("sets")
       .insert({
         workout_id: workoutId,
-        exercise:   exercise.toLowerCase().replace(/ /g, "_"),
+        exercise,
         weight_kg:  weightKg ? parseFloat(weightKg) : null,
-        rpe:        rpe ? parseFloat(rpe) : null,
-        notes:      notes || null,
+        rpe:        rpe      ? parseFloat(rpe)       : null,
+        notes:      notes    || null,
       })
       .select("id")
       .single();
@@ -124,19 +153,13 @@ export default function SaveSetModal({ repStats, onClose, onSaved }: Props) {
     onSaved();
   };
 
-  const selectClass = `
-    w-full bg-[#1a1a1a] border border-white/10 rounded-xl px-4 py-3
-    text-white focus:outline-none focus:border-orange-500 transition-colors
-    appearance-none cursor-pointer
-  `;
-
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm"
       onClick={onClose}
     >
       <div
-        className="relative w-full max-w-sm bg-[#1a1a1a] border border-white/10 rounded-2xl p-6 shadow-2xl"
+        className="relative w-full max-w-sm bg-[#1a1a1a] border border-white/10 rounded-2xl p-6 shadow-2xl max-h-[90vh] overflow-y-auto"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -172,18 +195,15 @@ export default function SaveSetModal({ repStats, onClose, onSaved }: Props) {
               >
                 {EXERCISES.map((ex) => (
                   <option
-                    key={ex}
-                    value={ex}
+                    key={ex.id}
+                    value={ex.id}
                     style={{ backgroundColor: "#1a1a1a", color: "white" }}
                   >
-                    {ex}
+                    {ex.label}
                   </option>
                 ))}
               </select>
-              {/* Custom dropdown arrow */}
-              <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-white/40">
-                ▼
-              </div>
+              <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-white/40">▼</div>
             </div>
           </div>
 
@@ -213,7 +233,7 @@ export default function SaveSetModal({ repStats, onClose, onSaved }: Props) {
                 value={rpe}
                 onChange={(e) => setRpe(e.target.value)}
                 className={selectClass}
-                style={{ backgroundColor: "#1a1a1a", color: rpe ? "white" : "rgba(255,255,255,0.2)" }}
+                style={{ backgroundColor: "#1a1a1a", color: "white" }}
               >
                 {RPE_OPTIONS.map((opt) => (
                   <option
@@ -225,9 +245,7 @@ export default function SaveSetModal({ repStats, onClose, onSaved }: Props) {
                   </option>
                 ))}
               </select>
-              <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-white/40">
-                ▼
-              </div>
+              <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-white/40">▼</div>
             </div>
           </div>
 
@@ -245,14 +263,10 @@ export default function SaveSetModal({ repStats, onClose, onSaved }: Props) {
             />
           </div>
 
-          {/* Error */}
           {error && (
-            <p className="text-red-400 text-sm bg-red-500/10 px-3 py-2 rounded-lg">
-              {error}
-            </p>
+            <p className="text-red-400 text-sm bg-red-500/10 px-3 py-2 rounded-lg">{error}</p>
           )}
 
-          {/* Submit */}
           <button
             onClick={handleSave}
             disabled={loading}

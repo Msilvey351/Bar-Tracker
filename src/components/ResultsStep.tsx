@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import type { AnalysisResult, CalibrationPoints } from "@/types";
+import type { AnalysisResult, CalibrationPoints, LiftType } from "@/types";
 import { analyseReps } from "@/lib/repDetection";
 import VideoPlayback from "./VideoPlayback";
 import VelocityChart from "./VelocityChart";
@@ -14,6 +14,7 @@ interface Props {
   result:      AnalysisResult;
   file:        File;
   calibration: CalibrationPoints | null;
+  liftType:    LiftType;
   onReset:     () => void;
 }
 
@@ -23,6 +24,7 @@ export default function ResultsStep({
   result,
   file,
   calibration,
+  liftType,
   onReset,
 }: Props) {
   const [view,      setView]      = useState<ResultView>("table");
@@ -33,8 +35,8 @@ export default function ResultsStep({
   const { user } = useAuth();
 
   const { vFrames, repStats } = useMemo(
-    () => analyseReps(result.frames, result.fps, { calibration }),
-    [result, calibration]
+    () => analyseReps(result.frames, result.fps, { calibration, liftType }),
+    [result, calibration, liftType]
   );
 
   const views: { id: ResultView; label: string; icon: string }[] = [
@@ -140,6 +142,7 @@ export default function ResultsStep({
       {showSave && repStats.length > 0 && (
         <SaveSetModal
           repStats={repStats}
+          liftType={liftType}
           onClose={() => setShowSave(false)}
           onSaved={() => {
             setShowSave(false);
