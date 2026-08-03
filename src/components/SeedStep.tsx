@@ -84,29 +84,47 @@ export default function SeedStep({ file, onSeedSet }: Props) {
     const video = videoRef.current;
     if (!video) return;
 
-    // 1. Append #t=0.001 to the URL to force mobile browsers to load the frame
-    const url = URL.createObjectURL(file) + "#t=0.001";
+    const url = URL.createObjectURL(file);
     video.src         = url;
     video.muted       = true;
     video.preload     = "auto";
     video.playsInline = true;
 
-    // 2. Nudge the playhead to 0.001 instead of exactly 0
-    const onMeta   = () => { video.currentTime = 0.001; };
-    const onSeeked = () => {
-      setVideoNativeDims({ w: video.videoWidth, h: video.videoHeight });
-      setReady(true);
+    // 1. Nudge slightly further into the video (100ms) to guarantee a visual frame
+    const onMeta = () => { 
+      video.currentTime = 0.1; 
+    };
+
+    // 2. A single ready handler that we attach to multiple events
+    const handleReady = () => {
+      if (video.videoWidth && video.videoHeight) {
+        setVideoNativeDims({ w: video.videoWidth, h: video.videoHeight });
+        setReady(true);
+      }
     };
 
     video.addEventListener("loadedmetadata", onMeta);
-    video.addEventListener("seeked",         onSeeked);
+    video.addEventListener("loadeddata",     handleReady);
+    video.addEventListener("canplay",        handleReady);
+    video.addEventListener("seeked",         handleReady);
     video.load();
 
+    // 3. Fallback: If iOS Safari swallows the events but has the data, force it ready
+    const fallback = setInterval(() => {
+      // readyState >= 2 means HAVE_CURRENT_DATA (frame is available to draw)
+      if (video.readyState >= 2 && video.videoWidth) {
+        handleReady();
+        clearInterval(fallback);
+      }
+    }, 250);
+
     return () => {
-      // Clean up the URL (stripping the #t=0.001 hash before revoking)
-      URL.revokeObjectURL(url.replace("#t=0.001", ""));
+      URL.revokeObjectURL(url);
+      clearInterval(fallback);
       video.removeEventListener("loadedmetadata", onMeta);
-      video.removeEventListener("seeked",         onSeeked);
+      video.removeEventListener("loadeddata",     handleReady);
+      video.removeEventListener("canplay",        handleReady);
+      video.removeEventListener("seeked",         handleReady);
     };
   }, [file]);
 
