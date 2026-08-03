@@ -84,46 +84,34 @@ export default function SeedStep({ file, onSeedSet }: Props) {
     const video = videoRef.current;
     if (!video) return;
 
-    const url = URL.createObjectURL(file);
+    // 1. Android sometimes returns an empty file.type. Force a safe fallback.
+    const safeType = file.type || "video/mp4";
+    const blob = new Blob([file], { type: safeType });
+    const url = URL.createObjectURL(blob);
+
     video.src         = url;
+    video.defaultMuted= true; // Crucial for Android auto-loading policies
     video.muted       = true;
     video.preload     = "auto";
     video.playsInline = true;
 
-    // Use a local flag so we don't spam state updates when multiple events fire
-    let isReadyLocal = false;
-
     const handleReady = () => {
-      if (!isReadyLocal && video.videoWidth && video.videoHeight) {
-        isReadyLocal = true;
+      if (video.videoWidth && video.videoHeight) {
         setVideoNativeDims({ w: video.videoWidth, h: video.videoHeight });
         setReady(true);
       }
     };
 
-    video.addEventListener("loadeddata", handleReady);
-    video.addEventListener("seeked",     handleReady);
-    video.addEventListener("playing",    handleReady); // Catch it if play() succeeds
+    const onMeta = () => { 
+      video.currentTime = 0.1; 
+    };
 
-    // 1. THE ANDROID CHROME HACK: Force the media engine to wake up
-    const attemptPlay = video.play();
-    
-    if (attemptPlay !== undefined) {
-      attemptPlay.then(() => {
-        // The engine woke up and started playing. Immediately pause and seek.
-        video.pause();
-        video.currentTime = 0.1; 
-      }).catch((err) => {
-        // Autoplay was blocked (can happen on some strict settings), 
-        // but just attempting play() often forces the frame into memory.
-        console.warn("Play interrupted, falling back to seek", err);
-        video.currentTime = 0.1;
-      });
-    } else {
-      video.currentTime = 0.1;
-    }
+    video.addEventListener("loadedmetadata", onMeta);
+    video.addEventListener("loadeddata",     handleReady);
+    video.addEventListener("seeked",         handleReady);
+    video.addEventListener("canplay",        handleReady);
+    video.load();
 
-    // 2. The safety net (just in case events drop)
     const fallback = setInterval(() => {
       if (video.readyState >= 2 && video.videoWidth) {
         handleReady();
@@ -134,9 +122,10 @@ export default function SeedStep({ file, onSeedSet }: Props) {
     return () => {
       URL.revokeObjectURL(url);
       clearInterval(fallback);
-      video.removeEventListener("loadeddata", handleReady);
-      video.removeEventListener("seeked",     handleReady);
-      video.removeEventListener("playing",    handleReady);
+      video.removeEventListener("loadedmetadata", onMeta);
+      video.removeEventListener("loadeddata",     handleReady);
+      video.removeEventListener("seeked",         handleReady);
+      video.removeEventListener("canplay",        handleReady);
     };
   }, [file]);
 
@@ -416,7 +405,7 @@ export default function SeedStep({ file, onSeedSet }: Props) {
         style={{ height: "65vh" }}
       >
         {!ready && (
-          <div className="absolute inset-0 flex items-center justify-center text-white/40 text-sm">
+          <div className="absolute inset-0 z-10 flex items-center justify-center bg-black text-white/40 text-sm">
             Loading first frame…
           </div>
         )}
@@ -426,8 +415,8 @@ export default function SeedStep({ file, onSeedSet }: Props) {
           playsInline
           muted
           className="w-full h-full object-contain"
-          style={{ opacity: ready ? 1 : 0 }}
         />
+
 
         <canvas
           ref={overlayRef}
