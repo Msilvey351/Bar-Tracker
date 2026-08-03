@@ -79,38 +79,54 @@ export default function SeedStep({ file, onSeedSet }: Props) {
   }, []);
 
   // ── Load Video ──────────────────────────────────────────────────────────────
-  // ── Load Video ──────────────────────────────────────────────────────────────
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
 
-    // 1. Android sometimes returns an empty file.type. Force a safe fallback.
-    const safeType = file.type || "video/mp4";
-    const blob = new Blob([file], { type: safeType });
-    const url = URL.createObjectURL(blob);
+    const url = URL.createObjectURL(file);
+    video.src          = url;
+    video.defaultMuted = true;
+    video.muted        = true;
+    video.playsInline  = true;
+    video.preload      = "auto";
 
-    video.src         = url;
-    video.defaultMuted= true; // Crucial for Android auto-loading policies
-    video.muted       = true;
-    video.preload     = "auto";
-    video.playsInline = true;
+    let isReadyLocal = false;
 
     const handleReady = () => {
-      if (video.videoWidth && video.videoHeight) {
+      // Wait until we actually have video dimensions
+      if (!isReadyLocal && video.videoWidth && video.videoHeight) {
+        isReadyLocal = true;
+        
+        // 1. The frame is decoded! Instantly pause playback.
+        video.pause();
+        
+        // 2. Now that the media engine is fully running and the buffer is loaded, 
+        //    seeking to 0 is perfectly safe and won't hang Android.
+        video.currentTime = 0; 
+        
         setVideoNativeDims({ w: video.videoWidth, h: video.videoHeight });
         setReady(true);
       }
     };
 
-    const onMeta = () => { 
-      video.currentTime = 0.1; 
+    const onTimeUpdate = () => {
+      // If playback advances at all, we know it's decoding
+      if (video.currentTime > 0) handleReady();
     };
 
-    video.addEventListener("loadedmetadata", onMeta);
-    video.addEventListener("loadeddata",     handleReady);
-    video.addEventListener("seeked",         handleReady);
-    video.addEventListener("canplay",        handleReady);
-    video.load();
+    video.addEventListener("loadeddata", handleReady);
+    video.addEventListener("playing",    handleReady);
+    video.addEventListener("timeupdate", onTimeUpdate);
+
+    // THE FIX: Actually play the video sequentially to bypass the Blob range-request bug.
+    const playPromise = video.play();
+    if (playPromise !== undefined) {
+      playPromise.catch((err) => {
+        // If strict autoplay policies blocked it, fallback to the standard seek
+        console.warn("Autoplay blocked, falling back to seek", err);
+        video.currentTime = 0.1;
+      });
+    }
 
     const fallback = setInterval(() => {
       if (video.readyState >= 2 && video.videoWidth) {
@@ -122,10 +138,9 @@ export default function SeedStep({ file, onSeedSet }: Props) {
     return () => {
       URL.revokeObjectURL(url);
       clearInterval(fallback);
-      video.removeEventListener("loadedmetadata", onMeta);
-      video.removeEventListener("loadeddata",     handleReady);
-      video.removeEventListener("seeked",         handleReady);
-      video.removeEventListener("canplay",        handleReady);
+      video.removeEventListener("loadeddata", handleReady);
+      video.removeEventListener("playing",    handleReady);
+      video.removeEventListener("timeupdate", onTimeUpdate);
     };
   }, [file]);
 
