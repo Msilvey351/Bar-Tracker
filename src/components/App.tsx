@@ -1,15 +1,16 @@
 "use client";
 
 import { useState } from "react";
-import type { AppStage, AnalysisResult, Point, CalibrationPoints } from "@/types";
+import type { AppStage, Point, CalibrationPoints } from "@/types";
 import UploadStep      from "./UploadStep";
 import SeedStep        from "./SeedStep";
 import AnalysisStep    from "./AnalysisStep";
 import ResultsStep     from "./ResultsStep";
 import HowItWorksModal from "./HowItWorksModal";
 import AuthModal       from "./AuthModal";
+import HistoryPage     from "./HistoryPage";
 import { useVideoAnalyser } from "@/hooks/useVideoAnalyser";
-import { useAuth }         from "@/context/AuthContext";
+import { useAuth }          from "@/context/AuthContext";
 
 export default function App() {
   const [stage,       setStage]       = useState<AppStage>("upload");
@@ -17,6 +18,7 @@ export default function App() {
   const [calibration, setCalibration] = useState<CalibrationPoints | null>(null);
   const [showHelp,    setShowHelp]    = useState(false);
   const [showAuth,    setShowAuth]    = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
 
   const { user, signOut } = useAuth();
 
@@ -52,12 +54,13 @@ export default function App() {
   return (
     <main className="min-h-screen flex flex-col items-center bg-[#0f0f0f] text-white">
 
+      {/* Overlays */}
+      {showHelp    && <HowItWorksModal onClose={() => setShowHelp(false)} />}
+      {showAuth    && <AuthModal       onClose={() => setShowAuth(false)} />}
+      {showHistory && <HistoryPage     onClose={() => setShowHistory(false)} />}
+
       {/* Header */}
       <header className="w-full py-4 px-6 border-b border-white/10 flex items-center gap-3">
-
-        {/* Modals */}
-        {showHelp && <HowItWorksModal onClose={() => setShowHelp(false)} />}
-        {showAuth && <AuthModal       onClose={() => setShowAuth(false)} />}
 
         {/* Logo */}
         <span className="text-2xl">🏋️</span>
@@ -75,12 +78,22 @@ export default function App() {
         {/* Right side */}
         <div className="ml-auto flex items-center gap-3">
 
-          {/* Auth */}
           {user ? (
             <div className="flex items-center gap-2">
+              {/* Email */}
               <span className="text-white/40 text-xs hidden sm:block truncate max-w-[8rem]">
                 {user.email}
               </span>
+
+              {/* History button */}
+              <button
+                onClick={() => setShowHistory(true)}
+                className="text-xs text-white/70 hover:text-white transition-colors border border-white/10 hover:border-white/20 rounded-lg px-2 py-1"
+              >
+                📋 History
+              </button>
+
+              {/* Sign out */}
               <button
                 onClick={signOut}
                 className="text-xs text-white/40 hover:text-white/70 transition-colors border border-white/10 hover:border-white/20 rounded-lg px-2 py-1"
