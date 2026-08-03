@@ -160,9 +160,9 @@ export default function App() {
       {/* Steps */}
       <div className="w-full max-w-4xl px-4 pb-16">
 
-        {stage === "upload" && (
+        <div style={{ display: stage === "upload" ? "block" : "none" }}>
           <UploadStep onFileAccepted={handleFileAccepted} />
-        )}
+        </div>
 
         {stage === "seed" && videoFile && (
           <SeedStep

@@ -82,53 +82,18 @@ export default function SeedStep({ file, onSeedSet }: Props) {
 
   // ── Load Video ──────────────────────────────────────────────────────────────
   useEffect(() => {
-    if (file.size === 0) {
-      setVideoError("File is 0 bytes. Ensure video is fully downloaded to your device")
-      return;
-    }
-    const video = videoRef.current;
-    if (!video) return;
+    if (!file) return;
 
+    // Use a clean URL without any JavaScript hacks
     const url = URL.createObjectURL(file);
-    video.src         = url;
-    video.muted       = true;
-    video.preload     = "auto";
-    video.playsInline = true;
-
-    const handleReady = () => {
-      if (video.videoWidth && video.videoHeight) {
-        setVideoNativeDims({ w: video.videoWidth, h: video.videoHeight });
-        setReady(true);
-      }
-    };
-
-    const onMeta = () => { 
-      // 1. Nudge to 0.001 instead of 0 to guarantee the 'seeked' event fires
-      video.currentTime = 0.001; 
-    };
-
-    video.addEventListener("loadedmetadata", onMeta);
-    video.addEventListener("seeked",         handleReady);
-    video.load();
-
-    // 2. Safety net: If Android swallows the seeked event, this catches it
-    const fallback = setInterval(() => {
-      if (video.readyState >= 2 && video.videoWidth) {
-        handleReady();
-        clearInterval(fallback);
-      }
-    }, 250);
-
+    const video = videoRef.current;
+    
+    if (video) {
+      video.src = `${url}#t=0.001`; // Native HTML5 frame fetch
+    }
+    
     return () => {
-      // 3. THE CRITICAL FIX: Delay revoking the URL!
-      // This stops React's double-render cycle from crashing the Android media engine.
-      setTimeout(() => {
-        URL.revokeObjectURL(url);
-      }, 2000);
-      
-      clearInterval(fallback);
-      video.removeEventListener("loadedmetadata", onMeta);
-      video.removeEventListener("seeked",         handleReady);
+      URL.revokeObjectURL(url);
     };
   }, [file]);
 
@@ -424,14 +389,19 @@ export default function SeedStep({ file, onSeedSet }: Props) {
           ref={videoRef}
           playsInline
           muted
+          preload="metadata"
           className="w-full h-full object-contain"
-          style={{ opacity: ready ? 1 : 0 }}
-          onError={(e) => {
-            // This will catch codec errors (like HEVC) or corrupted files
-            const err = e.currentTarget.error;
-            if (err) {
-              setVideoError(`Browser rejected video (Code ${err.code}): ${err.message || "Unsupported codec (e.g. HEVC) or corrupted file."}`);
+          onLoadedData={(e) => {
+            const video = e.currentTarget;
+            if (video.videoWidth && video.videoHeight) {
+              setVideoNativeDims({ w: video.videoWidth, h: video.videoHeight });
+              setReady(true);
+              setVideoError(null);
             }
+          }}
+          onError={(e) => {
+            const err = e.currentTarget.error;
+            setVideoError(err ? `Code ${err.code}: ${err.message}` : "Video load failed");
           }}
         />
 
