@@ -69,6 +69,7 @@ export default function SeedStep({ file, onSeedSet }: Props) {
   const [diameter,        setDiameter]        = useState<number>(45);
   const [liftType,        setLiftType]        = useState<LiftType>("squat");
   const [crosshairPos,    setCrosshairPos]    = useState({ x: 0, y: 0 });
+  const [videoUrl, setVideoUrl] = useState<string>("");
 
   const crosshairPosRef = useRef({ x: 0, y: 0 });
   const draggingRef     = useRef(false);
@@ -80,67 +81,14 @@ export default function SeedStep({ file, onSeedSet }: Props) {
 
   // ── Load Video ──────────────────────────────────────────────────────────────
   useEffect(() => {
-    const video = videoRef.current;
-    if (!video) return;
-
+    if (!file) return;
+    
     const url = URL.createObjectURL(file);
-    video.src          = url;
-    video.defaultMuted = true;
-    video.muted        = true;
-    video.playsInline  = true;
-    video.preload      = "auto";
-
-    let isReadyLocal = false;
-
-    const handleReady = () => {
-      // Wait until we actually have video dimensions
-      if (!isReadyLocal && video.videoWidth && video.videoHeight) {
-        isReadyLocal = true;
-        
-        // 1. The frame is decoded! Instantly pause playback.
-        video.pause();
-        
-        // 2. Now that the media engine is fully running and the buffer is loaded, 
-        //    seeking to 0 is perfectly safe and won't hang Android.
-        video.currentTime = 0; 
-        
-        setVideoNativeDims({ w: video.videoWidth, h: video.videoHeight });
-        setReady(true);
-      }
-    };
-
-    const onTimeUpdate = () => {
-      // If playback advances at all, we know it's decoding
-      if (video.currentTime > 0) handleReady();
-    };
-
-    video.addEventListener("loadeddata", handleReady);
-    video.addEventListener("playing",    handleReady);
-    video.addEventListener("timeupdate", onTimeUpdate);
-
-    // THE FIX: Actually play the video sequentially to bypass the Blob range-request bug.
-    const playPromise = video.play();
-    if (playPromise !== undefined) {
-      playPromise.catch((err) => {
-        // If strict autoplay policies blocked it, fallback to the standard seek
-        console.warn("Autoplay blocked, falling back to seek", err);
-        video.currentTime = 0.1;
-      });
-    }
-
-    const fallback = setInterval(() => {
-      if (video.readyState >= 2 && video.videoWidth) {
-        handleReady();
-        clearInterval(fallback);
-      }
-    }, 250);
-
+    // Let the browser natively jump to 100ms in. No JS manipulation required.
+    setVideoUrl(`${url}#t=0.1`);
+    
     return () => {
       URL.revokeObjectURL(url);
-      clearInterval(fallback);
-      video.removeEventListener("loadeddata", handleReady);
-      video.removeEventListener("playing",    handleReady);
-      video.removeEventListener("timeupdate", onTimeUpdate);
     };
   }, [file]);
 
@@ -427,9 +375,18 @@ export default function SeedStep({ file, onSeedSet }: Props) {
 
         <video
           ref={videoRef}
+          src={videoUrl}
           playsInline
           muted
+          preload="metadata"
           className="w-full h-full object-contain"
+          onLoadedData={e => {
+            const video = e.currentTarget;
+            if (video.videoWidth && video.videoHeight) {
+              setVideoNativeDims({ w: video.videoWidth, h: video.videoHeight });
+              setReady(true);
+            }
+          }}
         />
 
 
