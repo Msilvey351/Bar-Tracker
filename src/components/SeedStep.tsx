@@ -90,28 +90,41 @@ export default function SeedStep({ file, onSeedSet }: Props) {
     video.preload     = "auto";
     video.playsInline = true;
 
-    // 1. Nudge slightly further into the video (100ms) to guarantee a visual frame
-    const onMeta = () => { 
-      video.currentTime = 0.1; 
-    };
+    // Use a local flag so we don't spam state updates when multiple events fire
+    let isReadyLocal = false;
 
-    // 2. A single ready handler that we attach to multiple events
     const handleReady = () => {
-      if (video.videoWidth && video.videoHeight) {
+      if (!isReadyLocal && video.videoWidth && video.videoHeight) {
+        isReadyLocal = true;
         setVideoNativeDims({ w: video.videoWidth, h: video.videoHeight });
         setReady(true);
       }
     };
 
-    video.addEventListener("loadedmetadata", onMeta);
-    video.addEventListener("loadeddata",     handleReady);
-    video.addEventListener("canplay",        handleReady);
-    video.addEventListener("seeked",         handleReady);
-    video.load();
+    video.addEventListener("loadeddata", handleReady);
+    video.addEventListener("seeked",     handleReady);
+    video.addEventListener("playing",    handleReady); // Catch it if play() succeeds
 
-    // 3. Fallback: If iOS Safari swallows the events but has the data, force it ready
+    // 1. THE ANDROID CHROME HACK: Force the media engine to wake up
+    const attemptPlay = video.play();
+    
+    if (attemptPlay !== undefined) {
+      attemptPlay.then(() => {
+        // The engine woke up and started playing. Immediately pause and seek.
+        video.pause();
+        video.currentTime = 0.1; 
+      }).catch((err) => {
+        // Autoplay was blocked (can happen on some strict settings), 
+        // but just attempting play() often forces the frame into memory.
+        console.warn("Play interrupted, falling back to seek", err);
+        video.currentTime = 0.1;
+      });
+    } else {
+      video.currentTime = 0.1;
+    }
+
+    // 2. The safety net (just in case events drop)
     const fallback = setInterval(() => {
-      // readyState >= 2 means HAVE_CURRENT_DATA (frame is available to draw)
       if (video.readyState >= 2 && video.videoWidth) {
         handleReady();
         clearInterval(fallback);
@@ -121,10 +134,9 @@ export default function SeedStep({ file, onSeedSet }: Props) {
     return () => {
       URL.revokeObjectURL(url);
       clearInterval(fallback);
-      video.removeEventListener("loadedmetadata", onMeta);
-      video.removeEventListener("loadeddata",     handleReady);
-      video.removeEventListener("canplay",        handleReady);
-      video.removeEventListener("seeked",         handleReady);
+      video.removeEventListener("loadeddata", handleReady);
+      video.removeEventListener("seeked",     handleReady);
+      video.removeEventListener("playing",    handleReady);
     };
   }, [file]);
 
