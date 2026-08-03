@@ -81,14 +81,49 @@ export default function SeedStep({ file, onSeedSet }: Props) {
 
   // ── Load Video ──────────────────────────────────────────────────────────────
   useEffect(() => {
-    if (!file) return;
-    
+    const video = videoRef.current;
+    if (!video) return;
+
     const url = URL.createObjectURL(file);
-    // Let the browser natively jump to 100ms in. No JS manipulation required.
-    setVideoUrl(`${url}#t=0.1`);
-    
+    video.src         = url;
+    video.muted       = true;
+    video.preload     = "auto";
+    video.playsInline = true;
+
+    const handleReady = () => {
+      if (video.videoWidth && video.videoHeight) {
+        setVideoNativeDims({ w: video.videoWidth, h: video.videoHeight });
+        setReady(true);
+      }
+    };
+
+    const onMeta = () => { 
+      // 1. Nudge to 0.001 instead of 0 to guarantee the 'seeked' event fires
+      video.currentTime = 0.001; 
+    };
+
+    video.addEventListener("loadedmetadata", onMeta);
+    video.addEventListener("seeked",         handleReady);
+    video.load();
+
+    // 2. Safety net: If Android swallows the seeked event, this catches it
+    const fallback = setInterval(() => {
+      if (video.readyState >= 2 && video.videoWidth) {
+        handleReady();
+        clearInterval(fallback);
+      }
+    }, 250);
+
     return () => {
-      URL.revokeObjectURL(url);
+      // 3. THE CRITICAL FIX: Delay revoking the URL!
+      // This stops React's double-render cycle from crashing the Android media engine.
+      setTimeout(() => {
+        URL.revokeObjectURL(url);
+      }, 2000);
+      
+      clearInterval(fallback);
+      video.removeEventListener("loadedmetadata", onMeta);
+      video.removeEventListener("seeked",         handleReady);
     };
   }, [file]);
 
