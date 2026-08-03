@@ -70,6 +70,7 @@ export default function SeedStep({ file, onSeedSet }: Props) {
   const [liftType,        setLiftType]        = useState<LiftType>("squat");
   const [crosshairPos,    setCrosshairPos]    = useState({ x: 0, y: 0 });
   const [videoUrl, setVideoUrl] = useState<string>("");
+  const [videoError,      setVideoError]      = useState<string | null>(null); // Add this
 
   const crosshairPosRef = useRef({ x: 0, y: 0 });
   const draggingRef     = useRef(false);
@@ -81,6 +82,10 @@ export default function SeedStep({ file, onSeedSet }: Props) {
 
   // ── Load Video ──────────────────────────────────────────────────────────────
   useEffect(() => {
+    if (file.size === 0) {
+      setVideoError("File is 0 bytes. Ensure video is fully downloaded to your device")
+      return;
+    }
     const video = videoRef.current;
     if (!video) return;
 
@@ -403,23 +408,29 @@ export default function SeedStep({ file, onSeedSet }: Props) {
         style={{ height: "65vh" }}
       >
         {!ready && (
-          <div className="absolute inset-0 z-10 flex items-center justify-center bg-black text-white/40 text-sm">
-            Loading first frame…
+          <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center z-10 bg-black">
+            {videoError ? (
+              <div className="text-red-400">
+                <p className="font-bold mb-2">Video Load Failed</p>
+                <p className="text-sm">{videoError}</p>
+              </div>
+            ) : (
+              <span className="text-white/40 text-sm">Loading first frame…</span>
+            )}
           </div>
         )}
 
         <video
           ref={videoRef}
-          src={videoUrl}
           playsInline
           muted
-          preload="metadata"
           className="w-full h-full object-contain"
-          onLoadedData={e => {
-            const video = e.currentTarget;
-            if (video.videoWidth && video.videoHeight) {
-              setVideoNativeDims({ w: video.videoWidth, h: video.videoHeight });
-              setReady(true);
+          style={{ opacity: ready ? 1 : 0 }}
+          onError={(e) => {
+            // This will catch codec errors (like HEVC) or corrupted files
+            const err = e.currentTarget.error;
+            if (err) {
+              setVideoError(`Browser rejected video (Code ${err.code}): ${err.message || "Unsupported codec (e.g. HEVC) or corrupted file."}`);
             }
           }}
         />
