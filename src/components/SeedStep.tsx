@@ -79,17 +79,20 @@ export default function SeedStep({ file, onSeedSet }: Props) {
   }, []);
 
   // ── Load Video ──────────────────────────────────────────────────────────────
+  // ── Load Video ──────────────────────────────────────────────────────────────
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
 
-    const url = URL.createObjectURL(file);
+    // 1. Append #t=0.001 to the URL to force mobile browsers to load the frame
+    const url = URL.createObjectURL(file) + "#t=0.001";
     video.src         = url;
     video.muted       = true;
     video.preload     = "auto";
     video.playsInline = true;
 
-    const onMeta   = () => { video.currentTime = 0; };
+    // 2. Nudge the playhead to 0.001 instead of exactly 0
+    const onMeta   = () => { video.currentTime = 0.001; };
     const onSeeked = () => {
       setVideoNativeDims({ w: video.videoWidth, h: video.videoHeight });
       setReady(true);
@@ -100,7 +103,8 @@ export default function SeedStep({ file, onSeedSet }: Props) {
     video.load();
 
     return () => {
-      URL.revokeObjectURL(url);
+      // Clean up the URL (stripping the #t=0.001 hash before revoking)
+      URL.revokeObjectURL(url.replace("#t=0.001", ""));
       video.removeEventListener("loadedmetadata", onMeta);
       video.removeEventListener("seeked",         onSeeked);
     };
