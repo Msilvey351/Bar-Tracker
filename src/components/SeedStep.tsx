@@ -84,46 +84,16 @@ export default function SeedStep({ file, onSeedSet }: Props) {
   useEffect(() => {
     if (!file) return;
 
-    let url = "";
-    let isMounted = true;
-
-    const loadVideoToMemory = async () => {
-      try {
-        // Try the modern, fast way first
-        const buffer = await file.arrayBuffer();
-        if (!isMounted) return;
-        createVideoFromBuffer(buffer);
-      } catch (err) {
-        // If Google Photos locked it, try the legacy FileReader fallback
-        console.warn("arrayBuffer failed, trying FileReader...", err);
-        const reader = new FileReader();
-        
-        reader.onload = (e) => {
-          if (!isMounted || !e.target?.result) return;
-          createVideoFromBuffer(e.target.result as ArrayBuffer);
-        };
-        
-        reader.onerror = () => {
-          if (isMounted) setVideoError("File is locked by another app (like Google Photos). Please close the video in your gallery and try again.");
-        };
-        
-        reader.readAsArrayBuffer(file);
-      }
-    };
-
-    const createVideoFromBuffer = (buffer: ArrayBuffer) => {
-      const standaloneBlob = new Blob([buffer], { type: file.type || "video/mp4" });
-      url = URL.createObjectURL(standaloneBlob);
-      if (videoRef.current) {
-        videoRef.current.src = `${url}#t=0.001`;
-      }
-    };
-
-    loadVideoToMemory();
-
+    const url = URL.createObjectURL(file);
+    const video = videoRef.current;
+    
+    if (video) {
+      video.src = `${url}#t=0.001`; 
+    }
+    
     return () => {
-      isMounted = false;
-      if (url) URL.revokeObjectURL(url);
+      // Delay cleanup slightly to prevent React StrictMode from breaking the stream
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
     };
   }, [file]);
 
