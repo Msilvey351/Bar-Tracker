@@ -383,25 +383,31 @@ export default function SeedStep({ file, onSeedSet }: Props) {
         {videoUrl && (
           <video
             src={videoUrl}
-            autoPlay       /* <-- THIS forces Android to load the video data */
-            muted          /* <-- Required for autoPlay to work on mobile */
-            playsInline    /* <-- Required for autoPlay to work on mobile */
+            playsInline
+            muted
+            preload="auto"
             className="w-full h-full object-contain"
-            onLoadedData={(e) => {
+            onLoadedMetadata={(e) => {
+              // 1. The browser read the file headers. 
+              // Now we explicitly demand the first millisecond to force it to decode a frame.
+              e.currentTarget.currentTime = 0.001;
+            }}
+            onSeeked={(e) => {
+              // 2. The browser successfully jumped to 0.001s and drew the frame!
               const video = e.currentTarget;
-              
-              // Instantly pause it so it stays on the first frame
-              video.pause();
-              video.currentTime = 0; 
-              
               if (video.videoWidth && video.videoHeight) {
                 setVideoNativeDims({ w: video.videoWidth, h: video.videoHeight });
                 setReady(true);
               }
             }}
+            onError={(e) => {
+              const err = e.currentTarget.error;
+              setVideoError(err ? `Code ${err.code}: ${err.message}` : "Video load failed");
+            }}
           />
         )}
 
+        
         <canvas
           ref={overlayRef}
           className="absolute inset-0 w-full h-full"
