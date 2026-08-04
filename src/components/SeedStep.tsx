@@ -89,21 +89,33 @@ export default function SeedStep({ file, onSeedSet }: Props) {
 
     const loadVideoToMemory = async () => {
       try {
-        // 1. Physically read the file from the Google Photos pipe into browser RAM.
-        // This completely disconnects the video from the Android file provider!
+        // Try the modern, fast way first
         const buffer = await file.arrayBuffer();
         if (!isMounted) return;
-
-        // 2. Create a brand new standalone file in the browser
-        const standaloneBlob = new Blob([buffer], { type: file.type || "video/mp4" });
-        url = URL.createObjectURL(standaloneBlob);
-
-        // 3. Assign it to the video element
-        if (videoRef.current) {
-          videoRef.current.src = `${url}#t=0.001`;
-        }
+        createVideoFromBuffer(buffer);
       } catch (err) {
-        if (isMounted) setVideoError("Could not read file from device storage.");
+        // If Google Photos locked it, try the legacy FileReader fallback
+        console.warn("arrayBuffer failed, trying FileReader...", err);
+        const reader = new FileReader();
+        
+        reader.onload = (e) => {
+          if (!isMounted || !e.target?.result) return;
+          createVideoFromBuffer(e.target.result as ArrayBuffer);
+        };
+        
+        reader.onerror = () => {
+          if (isMounted) setVideoError("File is locked by another app (like Google Photos). Please close the video in your gallery and try again.");
+        };
+        
+        reader.readAsArrayBuffer(file);
+      }
+    };
+
+    const createVideoFromBuffer = (buffer: ArrayBuffer) => {
+      const standaloneBlob = new Blob([buffer], { type: file.type || "video/mp4" });
+      url = URL.createObjectURL(standaloneBlob);
+      if (videoRef.current) {
+        videoRef.current.src = `${url}#t=0.001`;
       }
     };
 
@@ -116,7 +128,7 @@ export default function SeedStep({ file, onSeedSet }: Props) {
   }, [file]);
 
 
-  
+
   // ── Center Crosshair on Load ────────────────────────────────────────────────
   useEffect(() => {
     if (!ready) return;

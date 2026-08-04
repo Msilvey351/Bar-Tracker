@@ -113,7 +113,7 @@ export default function UploadStep({ onFileAccepted }: Props) {
           <input
             id="video-upload"
             type="file"
-            accept="video/*,.mp4,.mov,.webm,.avi"
+            accept="video/mp4,video/quicktime,video/x-m4v,video/*"
             className="hidden"
             onChange={onInputChange}
             disabled={isUnsupported}
