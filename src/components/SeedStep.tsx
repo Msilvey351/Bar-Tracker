@@ -84,15 +84,19 @@ export default function SeedStep({ file, onSeedSet }: Props) {
   useEffect(() => {
     if (!file) return;
 
-    const url = URL.createObjectURL(file);
+    // 1. Force the MIME type. If Android stripped it, default to video/mp4.
+    const safeType = file.type || "video/mp4";
+    const safeBlob = new Blob([file], { type: safeType });
+    
+    // 2. Create a clean URL without any #t= fragments
+    const url = URL.createObjectURL(safeBlob);
     const video = videoRef.current;
     
     if (video) {
-      video.src = `${url}#t=0.001`; 
+      video.src = url;
     }
     
     return () => {
-      // Delay cleanup slightly to prevent React StrictMode from breaking the stream
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     };
   }, [file]);
@@ -391,8 +395,12 @@ export default function SeedStep({ file, onSeedSet }: Props) {
           ref={videoRef}
           playsInline
           muted
-          preload="metadata"
+          preload="auto"
           className="w-full h-full object-contain"
+          onLoadedMetadata={(e) => {
+            // Nudge the video forward slightly the exact moment the browser reads the file headers
+            e.currentTarget.currentTime = 0.001;
+          }}
           onLoadedData={(e) => {
             const video = e.currentTarget;
             if (video.videoWidth && video.videoHeight) {
