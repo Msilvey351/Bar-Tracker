@@ -96,9 +96,6 @@ export default function SeedStep({ file, onSeedSet }: Props) {
       video.src = url;
     }
     
-    return () => {
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-    };
   }, [file]);
 
 
@@ -391,29 +388,35 @@ export default function SeedStep({ file, onSeedSet }: Props) {
           </div>
         )}
 
-        <video
-          ref={videoRef}
-          playsInline
-          muted
-          preload="auto"
-          className="w-full h-full object-contain"
-          onLoadedMetadata={(e) => {
-            // Nudge the video forward slightly the exact moment the browser reads the file headers
-            e.currentTarget.currentTime = 0.001;
-          }}
-          onLoadedData={(e) => {
-            const video = e.currentTarget;
-            if (video.videoWidth && video.videoHeight) {
-              setVideoNativeDims({ w: video.videoWidth, h: video.videoHeight });
-              setReady(true);
-              setVideoError(null);
-            }
-          }}
-          onError={(e) => {
-            const err = e.currentTarget.error;
-            setVideoError(err ? `Code ${err.code}: ${err.message}` : "Video load failed");
-          }}
-        />
+        {videoUrl && (
+          <video
+            key={videoUrl} /* <-- THIS IS THE MAGIC BULLET. It stops React from recycling a crashed video node */
+            ref={videoRef}
+            playsInline
+            muted
+            preload="auto"
+            className="w-full h-full object-contain"
+            onLoadedMetadata={(e) => {
+              // Safely nudge the video to frame 1 once the headers are read
+              e.currentTarget.currentTime = 0.001;
+            }}
+            onLoadedData={(e) => {
+              const video = e.currentTarget;
+              if (video.videoWidth && video.videoHeight) {
+                setVideoNativeDims({ w: video.videoWidth, h: video.videoHeight });
+                setReady(true);
+                setVideoError(null);
+              }
+            }}
+            onError={(e) => {
+              const err = e.currentTarget.error;
+              setVideoError(err ? `Code ${err.code}: ${err.message}` : "Video load failed");
+            }}
+          >
+            {/* The source tag is far more stable on Android than the src attribute */}
+            <source src={videoUrl} type={file.type || "video/mp4"} />
+          </video>
+        )}
 
 
         <canvas
