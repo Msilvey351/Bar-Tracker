@@ -89,12 +89,8 @@ export default function SeedStep({ file, onSeedSet }: Props) {
     const safeBlob = new Blob([file], { type: safeType });
     
     // 2. Create a clean URL without any #t= fragments
-    const url = URL.createObjectURL(safeBlob);
-    const video = videoRef.current;
-    
-    if (video) {
-      video.src = url;
-    }
+    const url = URL.createObjectURL(safeBlob) + "#t=0.001";
+    setVideoUrl(url);
     
   }, [file]);
 
@@ -390,18 +386,16 @@ export default function SeedStep({ file, onSeedSet }: Props) {
 
         {videoUrl && (
           <video
-            key={videoUrl} /* <-- THIS IS THE MAGIC BULLET. It stops React from recycling a crashed video node */
-            ref={videoRef}
+            key={videoUrl} /* <-- Keeps React from recycling the video node */
+            src={videoUrl} /* <-- Crucial: src goes here so #t=0.001 works natively */
             playsInline
             muted
-            preload="auto"
+            preload="metadata"
             className="w-full h-full object-contain"
             onLoadedMetadata={(e) => {
-              // Safely nudge the video to frame 1 once the headers are read
-              e.currentTarget.currentTime = 0.001;
-            }}
-            onLoadedData={(e) => {
               const video = e.currentTarget;
+              // loadedmetadata is much more reliable on Android than loadeddata.
+              // Once we have dimensions, we unblock the UI. The #t=0.001 handles the visual frame.
               if (video.videoWidth && video.videoHeight) {
                 setVideoNativeDims({ w: video.videoWidth, h: video.videoHeight });
                 setReady(true);
@@ -412,10 +406,7 @@ export default function SeedStep({ file, onSeedSet }: Props) {
               const err = e.currentTarget.error;
               setVideoError(err ? `Code ${err.code}: ${err.message}` : "Video load failed");
             }}
-          >
-            {/* The source tag is far more stable on Android than the src attribute */}
-            <source src={videoUrl} type={file.type || "video/mp4"} />
-          </video>
+          />
         )}
 
 
