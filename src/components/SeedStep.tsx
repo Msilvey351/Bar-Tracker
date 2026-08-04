@@ -83,15 +83,11 @@ export default function SeedStep({ file, onSeedSet }: Props) {
   // ── Load Video ──────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!file) return;
-
-    // 1. Force the MIME type. If Android stripped it, default to video/mp4.
-    const safeType = file.type || "video/mp4";
-    const safeBlob = new Blob([file], { type: safeType });
-    
-    // 2. Create a clean URL without any #t= fragments
-    const url = URL.createObjectURL(safeBlob) + "#t=0.001";
+    const url = URL.createObjectURL(file);
     setVideoUrl(url);
     
+    // Clean up when we completely leave this step
+    return () => URL.revokeObjectURL(url);
   }, [file]);
 
 
@@ -386,29 +382,25 @@ export default function SeedStep({ file, onSeedSet }: Props) {
 
         {videoUrl && (
           <video
-            key={videoUrl} /* <-- Keeps React from recycling the video node */
-            src={videoUrl} /* <-- Crucial: src goes here so #t=0.001 works natively */
-            playsInline
-            muted
-            preload="metadata"
+            src={videoUrl}
+            autoPlay       /* <-- THIS forces Android to load the video data */
+            muted          /* <-- Required for autoPlay to work on mobile */
+            playsInline    /* <-- Required for autoPlay to work on mobile */
             className="w-full h-full object-contain"
-            onLoadedMetadata={(e) => {
+            onLoadedData={(e) => {
               const video = e.currentTarget;
-              // loadedmetadata is much more reliable on Android than loadeddata.
-              // Once we have dimensions, we unblock the UI. The #t=0.001 handles the visual frame.
+              
+              // Instantly pause it so it stays on the first frame
+              video.pause();
+              video.currentTime = 0; 
+              
               if (video.videoWidth && video.videoHeight) {
                 setVideoNativeDims({ w: video.videoWidth, h: video.videoHeight });
                 setReady(true);
-                setVideoError(null);
               }
-            }}
-            onError={(e) => {
-              const err = e.currentTarget.error;
-              setVideoError(err ? `Code ${err.code}: ${err.message}` : "Video load failed");
             }}
           />
         )}
-
 
         <canvas
           ref={overlayRef}
