@@ -542,8 +542,10 @@ export default function SeedStep({ file, onSeedSet }: Props) {
 
                 /**
                  * Important:
-                 * We unblock on metadata. With OPFS, the file is stable.
-                 * Avoid JS seeking on Android Chrome.
+                 * Do not seek with currentTime here. Android Chrome can crash
+                 * local/provider-backed videos when seeking too early.
+                 *
+                 * We unblock on metadata so users are not stuck forever.
                  */
                 setReady(true);
                 setVideoError(null);

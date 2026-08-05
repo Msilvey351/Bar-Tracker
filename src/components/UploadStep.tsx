@@ -2,24 +2,14 @@
 
 import { useCallback, useEffect, useState } from "react";
 import HowItWorksModal from "./HowItWorksModal";
-import { importVideoToStableFile } from "@/lib/importVideoToStableFile";
+import {
+  canUseOpfs,
+  importVideoToStableFile,
+} from "@/lib/importVideoToStableFile";
 
 interface Props {
   onFileAccepted: (file: File) => void;
 }
-
-type FilePickerAcceptType = {
-  description?: string;
-  accept: Record<string, string[]>;
-};
-
-type WindowWithFilePicker = Window & {
-  showOpenFilePicker?: (options?: {
-    multiple?: boolean;
-    types?: FilePickerAcceptType[];
-    excludeAcceptAllOption?: boolean;
-  }) => Promise<FileSystemFileHandle[]>;
-};
 
 const ACCEPTED_MIME_TYPES = [
   "video/mp4",
@@ -30,52 +20,30 @@ const ACCEPTED_MIME_TYPES = [
 
 const ACCEPTED_EXTENSIONS = /\.(mp4|webm|mov|m4v)$/i;
 
+function isIOSDevice() {
+  if (typeof navigator === "undefined") return false;
+
+  return (
+    /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)
+  );
+}
+
+function isAndroidDevice() {
+  if (typeof navigator === "undefined") return false;
+
+  return /Android/i.test(navigator.userAgent);
+}
+
 export default function UploadStep({ onFileAccepted }: Props) {
   const [dragging, setDragging] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [showModal, setShowModal] = useState(false);
   const [isUnsupported, setIsUnsupported] = useState(false);
 
   const [importing, setImporting] = useState(false);
   const [importProgress, setImportProgress] = useState(0);
-
-  const chooseFromFiles = async () => {
-  if (isUnsupported || importing) return;
-
-  const picker = (window as WindowWithFilePicker).showOpenFilePicker;
-
-  if (!picker) {
-    document.getElementById("video-upload")?.click();
-    return;
-  }
-
-  try {
-    const handles = await picker({
-      multiple: false,
-      excludeAcceptAllOption: false,
-      types: [
-        {
-          description: "Video files",
-          accept: {
-            "video/mp4": [".mp4", ".m4v"],
-            "video/quicktime": [".mov"],
-            "video/webm": [".webm"],
-          },
-        },
-      ],
-    });
-
-    const file = await handles[0]?.getFile();
-
-    if (file) {
-      await handleFile(file);
-    }
-  } catch (err) {
-    // User cancelled picker; no need to show error.
-    console.log("File picker cancelled or failed:", err);
-  }
-};
-
 
   useEffect(() => {
     const isFirefox = /Firefox/i.test(navigator.userAgent);
@@ -115,46 +83,84 @@ export default function UploadStep({ onFileAccepted }: Props) {
         size: `${(file.size / 1024 / 1024).toFixed(2)} MB`,
         rawSize: file.size,
         lastModified: file.lastModified,
+        userAgent: navigator.userAgent,
+        opfsAvailable: canUseOpfs(),
       });
 
       const validationError = validateFile(file);
 
       if (validationError) {
         setErr(validationError);
+        setNotice(null);
         return;
       }
 
       setErr(null);
+      setNotice(null);
       setImporting(true);
       setImportProgress(0);
 
-      try {
-        /**
-         * Critical Android fix:
-         * Copy the picker-provided file into browser-owned storage first.
-         * SeedStep should receive this stable copied file, not the original
-         * Android/Google Photos/Gallery provider-backed File.
-         */
-        const stableFile = await importVideoToStableFile(
-          file,
-          setImportProgress
-        );
+      const ios = isIOSDevice();
+      const android = isAndroidDevice();
 
-        console.log("Stable imported file details:", {
-          name: stableFile.name,
-          type: stableFile.type,
-          size: `${(stableFile.size / 1024 / 1024).toFixed(2)} MB`,
-          rawSize: stableFile.size,
-          lastModified: stableFile.lastModified,
-        });
+      try {
+        let fileToUse: File = file;
+
+        /**
+         * Android:
+         * Try to copy into OPFS first. This helps avoid Google Photos/Gallery
+         * provider-backed files causing Code 4 or hanging.
+         *
+         * iOS:
+         * OPFS may or may not be available. iOS Photo Library selections are
+         * generally more reliable than Android Google Photos, so if OPFS is
+         * missing/fails, we can fall back to the original File.
+         */
+        if (canUseOpfs()) {
+          try {
+            fileToUse = await importVideoToStableFile(file, setImportProgress);
+
+            console.log("Stable imported file details:", {
+              name: fileToUse.name,
+              type: fileToUse.type,
+              size: `${(fileToUse.size / 1024 / 1024).toFixed(2)} MB`,
+              rawSize: fileToUse.size,
+              lastModified: fileToUse.lastModified,
+            });
+          } catch (opfsErr) {
+            console.warn("OPFS import failed, falling back to original file:", opfsErr);
+
+            fileToUse = file;
+
+            if (android) {
+              setNotice(
+                "Using the selected file directly. On Android, this works best when you choose the video from Files → Internal Storage → DCIM → Camera, not Google Photos."
+              );
+            }
+          }
+        } else {
+          fileToUse = file;
+
+          if (android) {
+            setNotice(
+              "Browser storage import is unavailable. On Android, choose the video from Files → Internal Storage → DCIM → Camera instead of Google Photos."
+            );
+          }
+
+          if (ios) {
+            setNotice(
+              "Using the selected iOS video directly. For best results, use Most Compatible format and turn HDR off."
+            );
+          }
+        }
 
         setErr(null);
-        onFileAccepted(stableFile);
+        onFileAccepted(fileToUse);
       } catch (error) {
         console.error("Video import failed:", error);
 
         setErr(
-          "Could not import this video into browser storage. On Android, make sure you are using Chrome over HTTPS, and try selecting the video through Files → Internal Storage → DCIM → Camera instead of Google Photos or Gallery."
+          "Could not import this video. On Android, go back from the Google Photos picker and choose Files → Internal Storage → DCIM → Camera. On iPhone, make sure the video is downloaded locally and recorded in Most Compatible format."
         );
       } finally {
         setImporting(false);
@@ -258,14 +264,19 @@ export default function UploadStep({ onFileAccepted }: Props) {
                 ? "Please switch browsers"
                 : importing
                 ? "Please wait"
-                : "or click to browse"}
+                : "or choose from Files / Photo Library"}
+            </p>
+
+            <p className="text-white/30 text-xs mt-2 max-w-sm px-4 leading-relaxed">
+              Android: if Google Photos opens, tap Back or the menu and choose{" "}
+              <span className="text-white/50">Files</span> instead.
             </p>
           </div>
 
           <input
             id="video-upload"
             type="file"
-            accept=".mp4,.mov,.m4v,.webm,"
+            accept=".mp4,.mov,.m4v,.webm"
             className="hidden"
             onChange={onInputChange}
             disabled={isUnsupported || importing}
@@ -287,6 +298,12 @@ export default function UploadStep({ onFileAccepted }: Props) {
               {Math.round(importProgress * 100)}%
             </p>
           </div>
+        )}
+
+        {notice && (
+          <p className="w-full max-w-lg text-yellow-300 text-sm bg-yellow-500/10 border border-yellow-500/20 px-4 py-3 rounded-lg">
+            {notice}
+          </p>
         )}
 
         {err && (
@@ -355,11 +372,15 @@ export default function UploadStep({ onFileAccepted }: Props) {
           </div>
 
           <div className="mt-3 text-xs text-white/30 leading-relaxed">
-            Android tip: if a video will not import, choose it from{" "}
+            Android: choose from{" "}
             <span className="text-white/50">
               Files → Internal Storage → DCIM → Camera
             </span>{" "}
-            rather than directly from Google Photos or Gallery.
+            if Google Photos causes loading issues.
+            <br />
+            iPhone: Photo Library usually works. For best results, use{" "}
+            <span className="text-white/50">Most Compatible</span> video format
+            and turn HDR off.
           </div>
         </div>
       </div>

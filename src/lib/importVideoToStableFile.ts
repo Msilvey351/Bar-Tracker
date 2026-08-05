@@ -11,13 +11,17 @@ function guessVideoMimeType(file: File): string {
   return "video/mp4";
 }
 
+export function canUseOpfs(): boolean {
+  return typeof navigator !== "undefined" && !!navigator.storage?.getDirectory;
+}
+
 export async function importVideoToStableFile(
   file: File,
   onProgress?: (progress: number) => void
 ): Promise<File> {
   if (!navigator.storage?.getDirectory) {
     throw new Error(
-      "Browser storage API is unavailable. This usually means the app is not running over HTTPS."
+      "OPFS is unavailable. This usually means the app is not running in a secure context such as HTTPS."
     );
   }
 
@@ -60,11 +64,11 @@ export async function importVideoToStableFile(
     const copiedFile = await handle.getFile();
 
     /**
-     * Important:
-     * OPFS may not preserve the MIME type, so wrap the copied file with
-     * the original filename and a known video type.
+     * OPFS may not preserve the MIME type, so wrap the OPFS file with the
+     * original filename/type metadata.
      *
-     * This does NOT read the whole video into RAM like arrayBuffer().
+     * This avoids file.arrayBuffer(), so it does not intentionally load the
+     * whole video into RAM.
      */
     return new File([copiedFile], safeOriginalName, {
       type: guessVideoMimeType(file),
