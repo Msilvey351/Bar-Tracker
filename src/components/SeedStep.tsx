@@ -406,7 +406,6 @@ export default function SeedStep({ file, onSeedSet }: Props) {
             }}
           />
         )}
-
         
         <canvas
           ref={overlayRef}
