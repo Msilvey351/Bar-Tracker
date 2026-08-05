@@ -83,11 +83,14 @@ export default function SeedStep({ file, onSeedSet }: Props) {
   // ── Load Video ──────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!file) return;
-    const url = URL.createObjectURL(file);
+    
+    // 1. Create a clean URL and append the native time fragment
+    const url = URL.createObjectURL(file) + "#t=0.001";
     setVideoUrl(url);
     
-    // Clean up when we completely leave this step
-    return () => URL.revokeObjectURL(url);
+    return () => {
+      URL.revokeObjectURL(url);
+    };
   }, [file]);
 
 
@@ -385,19 +388,16 @@ export default function SeedStep({ file, onSeedSet }: Props) {
             src={videoUrl}
             playsInline
             muted
-            preload="auto"
+            preload="metadata"
             className="w-full h-full object-contain"
             onLoadedMetadata={(e) => {
-              // 1. The browser read the file headers. 
-              // Now we explicitly demand the first millisecond to force it to decode a frame.
-              e.currentTarget.currentTime = 0.001;
-            }}
-            onSeeked={(e) => {
-              // 2. The browser successfully jumped to 0.001s and drew the frame!
               const video = e.currentTarget;
+              // The browser has successfully read the file without crashing.
+              // We grab the dimensions and immediately unblock the UI.
               if (video.videoWidth && video.videoHeight) {
                 setVideoNativeDims({ w: video.videoWidth, h: video.videoHeight });
                 setReady(true);
+                setVideoError(null);
               }
             }}
             onError={(e) => {
