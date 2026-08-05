@@ -8,6 +8,19 @@ interface Props {
   onFileAccepted: (file: File) => void;
 }
 
+type FilePickerAcceptType = {
+  description?: string;
+  accept: Record<string, string[]>;
+};
+
+type WindowWithFilePicker = Window & {
+  showOpenFilePicker?: (options?: {
+    multiple?: boolean;
+    types?: FilePickerAcceptType[];
+    excludeAcceptAllOption?: boolean;
+  }) => Promise<FileSystemFileHandle[]>;
+};
+
 const ACCEPTED_MIME_TYPES = [
   "video/mp4",
   "video/webm",
@@ -25,6 +38,44 @@ export default function UploadStep({ onFileAccepted }: Props) {
 
   const [importing, setImporting] = useState(false);
   const [importProgress, setImportProgress] = useState(0);
+
+  const chooseFromFiles = async () => {
+  if (isUnsupported || importing) return;
+
+  const picker = (window as WindowWithFilePicker).showOpenFilePicker;
+
+  if (!picker) {
+    document.getElementById("video-upload")?.click();
+    return;
+  }
+
+  try {
+    const handles = await picker({
+      multiple: false,
+      excludeAcceptAllOption: false,
+      types: [
+        {
+          description: "Video files",
+          accept: {
+            "video/mp4": [".mp4", ".m4v"],
+            "video/quicktime": [".mov"],
+            "video/webm": [".webm"],
+          },
+        },
+      ],
+    });
+
+    const file = await handles[0]?.getFile();
+
+    if (file) {
+      await handleFile(file);
+    }
+  } catch (err) {
+    // User cancelled picker; no need to show error.
+    console.log("File picker cancelled or failed:", err);
+  }
+};
+
 
   useEffect(() => {
     const isFirefox = /Firefox/i.test(navigator.userAgent);
@@ -214,7 +265,7 @@ export default function UploadStep({ onFileAccepted }: Props) {
           <input
             id="video-upload"
             type="file"
-            accept=".mp4,video/mp4,.mov,video/quicktime,.m4v,video/x-m4v,.webm,video/webm"
+            accept=".mp4,.mov,.m4v,.webm,"
             className="hidden"
             onChange={onInputChange}
             disabled={isUnsupported || importing}
