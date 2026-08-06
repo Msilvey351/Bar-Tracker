@@ -62,12 +62,23 @@ function getDisplayedVideoSize(
   return { w: containerH * videoAspect, h: containerH };
 }
 
+function isIOSDevice() {
+  if (typeof navigator === "undefined") return false;
+
+  return (
+    /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)
+  );
+}
+
 export default function SeedStep({ file, onSeedSet }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLCanvasElement>(null);
 
   const [ready, setReady] = useState(false);
+  const [metadataReady, setMetadataReady] = useState(false);
+  const [needsIOSFrameWake, setNeedsIOSFrameWake] = useState(false);
   const [videoError, setVideoError] = useState<string | null>(null);
   const [videoUrl, setVideoUrl] = useState<string>("");
   const [videoNativeDims, setVideoNativeDims] = useState({ w: 1, h: 1 });
@@ -88,11 +99,73 @@ export default function SeedStep({ file, onSeedSet }: Props) {
     setCrosshairPos({ x, y });
   }, []);
 
+  const markVideoReady = useCallback(() => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    if (video.videoWidth && video.videoHeight) {
+      setVideoNativeDims({
+        w: video.videoWidth,
+        h: video.videoHeight,
+      });
+
+      setReady(true);
+      setNeedsIOSFrameWake(false);
+      setVideoError(null);
+    }
+  }, []);
+
+  const wakeIOSVideoFrame = useCallback(async () => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    try {
+      setVideoError(null);
+
+      video.muted = true;
+      video.playsInline = true;
+
+      /**
+       * iOS/WebKit often will not paint a local video frame until playback
+       * begins from a real user gesture. This function is called by tapping
+       * the "Show Video Frame" button, so WebKit allows it.
+       */
+      await video.play();
+
+      /**
+       * Give WebKit a brief moment to decode/paint a frame, then pause.
+       * Keep this short so the video barely advances.
+       */
+      await new Promise((resolve) => window.setTimeout(resolve, 120));
+
+      video.pause();
+
+      if (video.videoWidth && video.videoHeight) {
+        setVideoNativeDims({
+          w: video.videoWidth,
+          h: video.videoHeight,
+        });
+
+        setReady(true);
+        setNeedsIOSFrameWake(false);
+        setVideoError(null);
+      }
+    } catch (err) {
+      console.error("Could not wake iOS video frame:", err);
+
+      setVideoError(
+        "iOS could not display the first frame automatically. Try tapping the video/play control, then pause it before placing points."
+      );
+    }
+  }, []);
+
   // ── Load Video ──────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!file) return;
 
     setReady(false);
+    setMetadataReady(false);
+    setNeedsIOSFrameWake(false);
     setVideoError(null);
     setVideoNativeDims({ w: 1, h: 1 });
 
@@ -107,6 +180,7 @@ export default function SeedStep({ file, onSeedSet }: Props) {
       size: `${(file.size / 1024 / 1024).toFixed(2)} MB`,
       rawSize: file.size,
       lastModified: file.lastModified,
+      isIOS: isIOSDevice(),
     });
 
     const url = URL.createObjectURL(file);
@@ -272,10 +346,12 @@ export default function SeedStep({ file, onSeedSet }: Props) {
       ctx.strokeStyle = "#3b82f6";
       ctx.lineWidth = 2;
       ctx.setLineDash([6, 4]);
+
       ctx.beginPath();
       ctx.moveTo(topCss.x, topCss.y);
       ctx.lineTo(botCss.x, botCss.y);
       ctx.stroke();
+
       ctx.setLineDash([]);
 
       ctx.fillStyle = "#3b82f6";
@@ -516,6 +592,21 @@ export default function SeedStep({ file, onSeedSet }: Props) {
                 <p className="font-bold mb-2">Video Load Failed</p>
                 <p className="text-sm">{videoError}</p>
               </div>
+            ) : needsIOSFrameWake && metadataReady ? (
+              <div className="flex flex-col items-center gap-3">
+                <p className="max-w-sm text-white/50 text-sm leading-relaxed">
+                  iOS loaded the video, but needs a tap to display the first
+                  frame.
+                </p>
+
+                <button
+                  type="button"
+                  onClick={wakeIOSVideoFrame}
+                  className="px-5 py-2 rounded-xl bg-orange-500 hover:bg-orange-600 text-white font-bold text-sm transition-colors"
+                >
+                  Show Video Frame
+                </button>
+              </div>
             ) : (
               <span className="text-white/40 text-sm">Loading video…</span>
             )}
@@ -540,42 +631,37 @@ export default function SeedStep({ file, onSeedSet }: Props) {
                   h: video.videoHeight,
                 });
 
+                setMetadataReady(true);
+                setVideoError(null);
+
                 /**
-                 * Important:
-                 * Do not seek with currentTime here. Android Chrome can crash
-                 * local/provider-backed videos when seeking too early.
+                 * Android / desktop:
+                 * Metadata is enough to unblock the UI and avoids old Android
+                 * decoded-frame hangs.
                  *
-                 * We unblock on metadata so users are not stuck forever.
+                 * iOS:
+                 * Metadata can arrive before WebKit paints an actual frame,
+                 * causing a black square. Ask for a real tap to wake playback.
                  */
-                setReady(true);
-                setVideoError(null);
+                if (isIOSDevice()) {
+                  setNeedsIOSFrameWake(true);
+                } else {
+                  setReady(true);
+                }
               }
             }}
-            onLoadedData={(e) => {
-              const video = e.currentTarget;
-
-              if (video.videoWidth && video.videoHeight) {
-                setVideoNativeDims({
-                  w: video.videoWidth,
-                  h: video.videoHeight,
-                });
-
-                setReady(true);
-                setVideoError(null);
-              }
+            onLoadedData={() => {
+              /**
+               * loadeddata means a frame is available. If iOS reaches this,
+               * the frame should be paintable, so it is safe to mark ready.
+               */
+              markVideoReady();
             }}
-            onCanPlay={(e) => {
-              const video = e.currentTarget;
-
-              if (video.videoWidth && video.videoHeight) {
-                setVideoNativeDims({
-                  w: video.videoWidth,
-                  h: video.videoHeight,
-                });
-
-                setReady(true);
-                setVideoError(null);
-              }
+            onCanPlay={() => {
+              markVideoReady();
+            }}
+            onPlaying={() => {
+              markVideoReady();
             }}
             onError={(e) => {
               const err = e.currentTarget.error;
