@@ -5,17 +5,17 @@ import type { AnalysisResult, CalibrationPoints, LiftType } from "@/types";
 import { analyseReps } from "@/lib/repDetection";
 import VideoPlayback from "./VideoPlayback";
 import VelocityChart from "./VelocityChart";
-import RepTable      from "./RepTable";
-import AuthModal     from "./AuthModal";
-import SaveSetModal  from "./SaveSetModal";
-import { useAuth }   from "@/context/AuthContext";
+import RepTable from "./RepTable";
+import AuthModal from "./AuthModal";
+import SaveSetModal from "./SaveSetModal";
+import { useAuth } from "@/context/AuthContext";
 
 interface Props {
-  result:      AnalysisResult;
-  file:        File;
+  result: AnalysisResult;
+  file: File;
   calibration: CalibrationPoints | null;
-  liftType:    LiftType;
-  onReset:     () => void;
+  liftType: LiftType;
+  onReset: () => void;
 }
 
 type ResultView = "table" | "chart" | "playback";
@@ -27,9 +27,9 @@ export default function ResultsStep({
   liftType,
   onReset,
 }: Props) {
-  const [view,      setView]      = useState<ResultView>("table");
-  const [showAuth,  setShowAuth]  = useState(false);
-  const [showSave,  setShowSave]  = useState(false);
+  const [view, setView] = useState<ResultView>("table");
+  const [showAuth, setShowAuth] = useState(false);
+  const [showSave, setShowSave] = useState(false);
   const [savedDone, setSavedDone] = useState(false);
 
   const { user } = useAuth();
@@ -40,14 +40,13 @@ export default function ResultsStep({
   );
 
   const views: { id: ResultView; label: string; icon: string }[] = [
-    { id: "table",    label: "Rep Stats",      icon: "📊" },
-    { id: "chart",    label: "Velocity Chart", icon: "📈" },
+    { id: "table", label: "Rep Stats", icon: "📊" },
+    { id: "chart", label: "Velocity Chart", icon: "📈" },
     { id: "playback", label: "Video Playback", icon: "🎬" },
   ];
 
   return (
     <div className="flex flex-col items-center gap-6">
-
       {/* Header */}
       <div className="text-center">
         <h2 className="text-2xl font-bold">Analysis Complete 🎉</h2>
@@ -74,9 +73,10 @@ export default function ResultsStep({
             className={`
               px-4 py-2 rounded-lg font-semibold text-sm transition-all
               flex items-center gap-2
-              ${view === v.id
-                ? "bg-orange-500 text-white shadow-md shadow-orange-500/20"
-                : "text-white/50 hover:text-white"
+              ${
+                view === v.id
+                  ? "bg-orange-500 text-white shadow-md shadow-orange-500/20"
+                  : "text-white/50 hover:text-white"
               }
             `}
           >
@@ -91,6 +91,7 @@ export default function ResultsStep({
         {view === "table" && (
           <RepTable stats={repStats} calibration={calibration} />
         )}
+
         {view === "chart" && (
           <VelocityChart
             vFrames={vFrames}
@@ -98,6 +99,7 @@ export default function ResultsStep({
             calibration={calibration}
           />
         )}
+
         {view === "playback" && (
           <VideoPlayback file={file} result={result} vFrames={vFrames} />
         )}
@@ -136,12 +138,12 @@ export default function ResultsStep({
       </button>
 
       {/* Modals */}
-      {showAuth && (
-        <AuthModal onClose={() => setShowAuth(false)} />
-      )}
+      {showAuth && <AuthModal onClose={() => setShowAuth(false)} />}
+
       {showSave && repStats.length > 0 && (
         <SaveSetModal
           repStats={repStats}
+          calibration={calibration}
           liftType={liftType}
           onClose={() => setShowSave(false)}
           onSaved={() => {
@@ -150,7 +152,6 @@ export default function ResultsStep({
           }}
         />
       )}
-
     </div>
   );
 }

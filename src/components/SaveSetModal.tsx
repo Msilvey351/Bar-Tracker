@@ -2,54 +2,57 @@
 
 import { useState } from "react";
 import { createClient } from "@/lib/supabase/client";
-import type { RepStats, LiftType } from "@/types";
+import type { RepStats, LiftType, CalibrationPoints } from "@/types";
 
 interface Props {
-  repStats:  RepStats[];
-  liftType:  LiftType;
-  onClose:   () => void;
-  onSaved:   () => void;
+  repStats: RepStats[];
+  calibration: CalibrationPoints | null;
+  liftType: LiftType;
+  onClose: () => void;
+  onSaved: () => void;
 }
 
 const EXERCISES: { id: string; label: string; lift: LiftType | "all" }[] = [
-  { id: "squat",          label: "Squat",          lift: "squat"    },
-  { id: "bench_press",    label: "Bench Press",    lift: "bench"    },
-  { id: "deadlift",       label: "Deadlift",       lift: "deadlift" },
-  { id: "overhead_press", label: "Overhead Press", lift: "all"      },
-  { id: "row",            label: "Row",            lift: "all"      },
-  { id: "other",          label: "Other",          lift: "all"      },
+  { id: "squat", label: "Squat", lift: "squat" },
+  { id: "bench_press", label: "Bench Press", lift: "bench" },
+  { id: "deadlift", label: "Deadlift", lift: "deadlift" },
+  { id: "overhead_press", label: "Overhead Press", lift: "all" },
+  { id: "row", label: "Row", lift: "all" },
+  { id: "other", label: "Other", lift: "all" },
 ];
 
-// Default exercise based on lift type
 function defaultExercise(liftType: LiftType): string {
   switch (liftType) {
-    case "squat":    return "squat";
-    case "bench":    return "bench_press";
-    case "deadlift": return "deadlift";
+    case "squat":
+      return "squat";
+    case "bench":
+      return "bench_press";
+    case "deadlift":
+      return "deadlift";
   }
 }
 
 const RPE_OPTIONS: { value: string; label: string }[] = [
-  { value: "",    label: "— Not rated —" },
-  { value: "10",  label: "10"  },
+  { value: "", label: "— Not rated —" },
+  { value: "10", label: "10" },
   { value: "9.5", label: "9.5" },
-  { value: "9",   label: "9"   },
+  { value: "9", label: "9" },
   { value: "8.5", label: "8.5" },
-  { value: "8",   label: "8"   },
+  { value: "8", label: "8" },
   { value: "7.5", label: "7.5" },
-  { value: "7",   label: "7"   },
+  { value: "7", label: "7" },
   { value: "6.5", label: "6.5" },
-  { value: "6",   label: "6"   },
+  { value: "6", label: "6" },
   { value: "5.5", label: "5.5" },
-  { value: "5",   label: "5"   },
+  { value: "5", label: "5" },
   { value: "4.5", label: "4.5" },
-  { value: "4",   label: "4"   },
+  { value: "4", label: "4" },
   { value: "3.5", label: "3.5" },
-  { value: "3",   label: "3"   },
+  { value: "3", label: "3" },
   { value: "2.5", label: "2.5" },
-  { value: "2",   label: "2"   },
+  { value: "2", label: "2" },
   { value: "1.5", label: "1.5" },
-  { value: "1",   label: "1"   },
+  { value: "1", label: "1" },
 ];
 
 const selectClass = `
@@ -58,13 +61,53 @@ const selectClass = `
   appearance-none cursor-pointer
 `;
 
-export default function SaveSetModal({ repStats, liftType, onClose, onSaved }: Props) {
+function fmt(n: number, decimals = 2) {
+  if (!Number.isFinite(n)) return "—";
+  return n.toFixed(decimals);
+}
+
+export default function SaveSetModal({
+  repStats,
+  calibration,
+  liftType,
+  onClose,
+  onSaved,
+}: Props) {
   const [exercise, setExercise] = useState(defaultExercise(liftType));
   const [weightKg, setWeightKg] = useState<string>("");
-  const [rpe,      setRpe]      = useState<string>("");
-  const [notes,    setNotes]    = useState("");
-  const [loading,  setLoading]  = useState(false);
-  const [error,    setError]    = useState<string | null>(null);
+  const [rpe, setRpe] = useState<string>("");
+  const [notes, setNotes] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const isCalibrated = calibration !== null;
+  const velocityUnit = isCalibrated ? "m/s" : "px/s";
+
+  const convertVelocity = (pxPerSecond: number) => {
+    if (!calibration) return pxPerSecond;
+    return pxPerSecond / calibration.pxPerM;
+  };
+
+  const finalRepRpe = rpe ? parseFloat(rpe) : null;
+
+  const getRepRpe = (repNumber: number) => {
+    if (finalRepRpe == null || !Number.isFinite(finalRepRpe)) return null;
+
+    const totalReps = repStats.length;
+
+    /**
+     * User rates final rep.
+     *
+     * Example:
+     * 7 reps, final RPE 9:
+     * rep 7 = 9
+     * rep 6 = 8
+     * rep 5 = 7
+     * ...
+     */
+    const repsBeforeLast = totalReps - repNumber;
+    return Math.max(1, finalRepRpe - repsBeforeLast);
+  };
 
   const handleSave = async () => {
     setLoading(true);
@@ -72,22 +115,34 @@ export default function SaveSetModal({ repStats, liftType, onClose, onSaved }: P
 
     const supabase = createClient();
 
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) { setError("Not signed in"); setLoading(false); return; }
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
 
-    // Find or create a workout for today
+    if (!user) {
+      setError("Not signed in");
+      setLoading(false);
+      return;
+    }
+
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
     let workoutId: string;
 
-    const { data: existing } = await supabase
+    const { data: existing, error: existingErr } = await supabase
       .from("workouts")
       .select("id")
       .gte("date", today.toISOString())
       .order("date", { ascending: false })
       .limit(1)
       .maybeSingle();
+
+    if (existingErr) {
+      setError(existingErr.message);
+      setLoading(false);
+      return;
+    }
 
     if (existing) {
       workoutId = existing.id;
@@ -96,8 +151,10 @@ export default function SaveSetModal({ repStats, liftType, onClose, onSaved }: P
         .from("workouts")
         .insert({
           user_id: user.id,
-          title:   `${today.toLocaleDateString("en-NZ", { weekday: "long" })} Workout`,
-          date:    new Date().toISOString(),
+          title: `${today.toLocaleDateString("en-NZ", {
+            weekday: "long",
+          })} Workout`,
+          date: new Date().toISOString(),
         })
         .select("id")
         .single();
@@ -107,18 +164,28 @@ export default function SaveSetModal({ repStats, liftType, onClose, onSaved }: P
         setLoading(false);
         return;
       }
+
       workoutId = newWorkout.id;
     }
 
-    // Create the set
     const { data: newSet, error: sErr } = await supabase
       .from("sets")
       .insert({
         workout_id: workoutId,
         exercise,
-        weight_kg:  weightKg ? parseFloat(weightKg) : null,
-        rpe:        rpe      ? parseFloat(rpe)       : null,
-        notes:      notes    || null,
+        weight_kg: weightKg ? parseFloat(weightKg) : null,
+
+        /**
+         * This remains the user-rated RPE for the final rep / whole set.
+         */
+        rpe: finalRepRpe,
+
+        /**
+         * Helps history know whether saved velocities are m/s or px/s.
+         */
+        velocity_unit: velocityUnit,
+
+        notes: notes || null,
       })
       .select("id")
       .single();
@@ -129,20 +196,37 @@ export default function SaveSetModal({ repStats, liftType, onClose, onSaved }: P
       return;
     }
 
-    // Insert all reps
-    const repsToInsert = repStats.map((r) => ({
-      set_id:                   newSet.id,
-      rep_number:               r.repNumber,
-      avg_concentric_velocity:  r.avgConcentricVelocity,
-      avg_eccentric_velocity:   r.avgEccentricVelocity,
-      peak_concentric_velocity: r.peakConcentricVelocity,
-      concentric_duration:      r.concentricDuration,
-      eccentric_duration:       r.eccentricDuration,
-      percent_speed_drop:       r.percentSpeedDrop,
-      pause_duration:           r.pauseDuration ?? 0,
+    /**
+     * Important:
+     * Save the same values the immediate RepTable shows.
+     *
+     * RepTable displays:
+     * calibrated: px/s / pxPerM = m/s
+     * uncalibrated: raw px/s
+     *
+     * So we store that same displayed unit here.
+     */
+    const repsToInsert = repStats.map((rep) => ({
+      set_id: newSet.id,
+      rep_number: rep.repNumber,
+
+      avg_concentric_velocity: convertVelocity(rep.avgConcentricVelocity),
+      avg_eccentric_velocity: convertVelocity(rep.avgEccentricVelocity),
+      peak_concentric_velocity: convertVelocity(rep.peakConcentricVelocity),
+
+      concentric_duration: rep.concentricDuration,
+      eccentric_duration: rep.eccentricDuration,
+      percent_speed_drop: rep.percentSpeedDrop,
+      pause_duration: rep.pauseDuration ?? 0,
+
+      /**
+       * Per-rep RPE derived backwards from the final rep RPE.
+       */
+      rpe: getRepRpe(rep.repNumber),
     }));
 
     const { error: rErr } = await supabase.from("reps").insert(repsToInsert);
+
     if (rErr) {
       setError(rErr.message);
       setLoading(false);
@@ -152,6 +236,12 @@ export default function SaveSetModal({ repStats, liftType, onClose, onSaved }: P
     setLoading(false);
     onSaved();
   };
+
+  const previewFinalRpe = finalRepRpe;
+  const previewFirstRpe =
+    previewFinalRpe == null
+      ? null
+      : Math.max(1, previewFinalRpe - (repStats.length - 1));
 
   return (
     <div
@@ -167,10 +257,12 @@ export default function SaveSetModal({ repStats, liftType, onClose, onSaved }: P
           <div>
             <h2 className="text-lg font-bold text-white">Save Set</h2>
             <p className="text-white/40 text-xs mt-0.5">
-              {repStats.length} rep{repStats.length !== 1 ? "s" : ""} ·{" "}
-              peak {repStats[0]?.peakConcentricVelocity.toFixed(2)} m/s
+              {repStats.length} rep{repStats.length !== 1 ? "s" : ""} · peak{" "}
+              {fmt(convertVelocity(repStats[0]?.peakConcentricVelocity ?? 0))}{" "}
+              {velocityUnit}
             </p>
           </div>
+
           <button
             onClick={onClose}
             className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white/60 hover:text-white transition-all"
@@ -180,12 +272,12 @@ export default function SaveSetModal({ repStats, liftType, onClose, onSaved }: P
         </div>
 
         <div className="flex flex-col gap-4">
-
           {/* Exercise */}
           <div>
             <label className="text-white/60 text-xs font-semibold uppercase tracking-wider mb-1.5 block">
               Exercise
             </label>
+
             <div className="relative">
               <select
                 value={exercise}
@@ -203,15 +295,22 @@ export default function SaveSetModal({ repStats, liftType, onClose, onSaved }: P
                   </option>
                 ))}
               </select>
-              <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-white/40">▼</div>
+
+              <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-white/40">
+                ▼
+              </div>
             </div>
           </div>
 
           {/* Weight */}
           <div>
             <label className="text-white/60 text-xs font-semibold uppercase tracking-wider mb-1.5 block">
-              Weight (kg) <span className="text-white/20 normal-case font-normal">— optional</span>
+              Weight (kg){" "}
+              <span className="text-white/20 normal-case font-normal">
+                — optional
+              </span>
             </label>
+
             <input
               type="number"
               value={weightKg}
@@ -226,8 +325,12 @@ export default function SaveSetModal({ repStats, liftType, onClose, onSaved }: P
           {/* RPE */}
           <div>
             <label className="text-white/60 text-xs font-semibold uppercase tracking-wider mb-1.5 block">
-              RPE <span className="text-white/20 normal-case font-normal">— optional</span>
+              Final Rep RPE{" "}
+              <span className="text-white/20 normal-case font-normal">
+                — optional
+              </span>
             </label>
+
             <div className="relative">
               <select
                 value={rpe}
@@ -245,15 +348,28 @@ export default function SaveSetModal({ repStats, liftType, onClose, onSaved }: P
                   </option>
                 ))}
               </select>
-              <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-white/40">▼</div>
+
+              <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-white/40">
+                ▼
+              </div>
             </div>
+
+            {previewFinalRpe != null && (
+              <p className="text-white/30 text-xs mt-1.5">
+                Saved per rep as RPE {previewFirstRpe} → {previewFinalRpe}
+              </p>
+            )}
           </div>
 
           {/* Notes */}
           <div>
             <label className="text-white/60 text-xs font-semibold uppercase tracking-wider mb-1.5 block">
-              Notes <span className="text-white/20 normal-case font-normal">— optional</span>
+              Notes{" "}
+              <span className="text-white/20 normal-case font-normal">
+                — optional
+              </span>
             </label>
+
             <input
               type="text"
               value={notes}
@@ -264,7 +380,9 @@ export default function SaveSetModal({ repStats, liftType, onClose, onSaved }: P
           </div>
 
           {error && (
-            <p className="text-red-400 text-sm bg-red-500/10 px-3 py-2 rounded-lg">{error}</p>
+            <p className="text-red-400 text-sm bg-red-500/10 px-3 py-2 rounded-lg">
+              {error}
+            </p>
           )}
 
           <button
@@ -274,7 +392,6 @@ export default function SaveSetModal({ repStats, liftType, onClose, onSaved }: P
           >
             {loading ? "Saving…" : "Save Set 💾"}
           </button>
-
         </div>
       </div>
     </div>
