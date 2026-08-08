@@ -7,8 +7,9 @@ import {
   importVideoToStableFile,
 } from "@/lib/importVideoToStableFile";
 
-interface Props {
+interface UploadStepProps {
   onFileAccepted: (file: File) => void;
+  onStartLive?: () => void;
 }
 
 const ACCEPTED_MIME_TYPES = [
@@ -35,7 +36,7 @@ function isAndroidDevice() {
   return /Android/i.test(navigator.userAgent);
 }
 
-export default function UploadStep({ onFileAccepted }: Props) {
+export default function UploadStep({ onFileAccepted, onStartLive }: UploadStepProps) {
   const [dragging, setDragging] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -106,16 +107,6 @@ export default function UploadStep({ onFileAccepted }: Props) {
       try {
         let fileToUse: File = file;
 
-        /**
-         * Android:
-         * Try to copy into OPFS first. This helps avoid Google Photos/Gallery
-         * provider-backed files causing Code 4 or hanging.
-         *
-         * iOS:
-         * OPFS may or may not be available. iOS Photo Library selections are
-         * generally more reliable than Android Google Photos, so if OPFS is
-         * missing/fails, we can fall back to the original File.
-         */
         if (canUseOpfs()) {
           try {
             fileToUse = await importVideoToStableFile(file, setImportProgress);
@@ -193,9 +184,6 @@ export default function UploadStep({ onFileAccepted }: Props) {
       handleFile(file);
     }
 
-    /**
-     * Allows the user to choose the same file again if import fails.
-     */
     e.currentTarget.value = "";
   };
 
@@ -211,7 +199,6 @@ export default function UploadStep({ onFileAccepted }: Props) {
           </p>
         </div>
 
-        {/* Browser Warning */}
         {isUnsupported && (
           <div className="w-full max-w-lg bg-red-500/10 border border-red-500/30 rounded-xl px-5 py-4 text-center">
             <h3 className="text-red-400 font-bold mb-1">
@@ -312,6 +299,26 @@ export default function UploadStep({ onFileAccepted }: Props) {
           </p>
         )}
 
+        {/* 🔥 Live Camera Trigger */}
+        {onStartLive && (
+          <div className="w-full max-w-lg flex flex-col items-center gap-4 my-2">
+            <div className="flex items-center gap-4 w-full">
+              <div className="h-px bg-white/10 flex-1" />
+              <span className="text-xs text-white/40 font-semibold uppercase tracking-wider">OR</span>
+              <div className="h-px bg-white/10 flex-1" />
+            </div>
+            
+            <button
+              onClick={onStartLive}
+              className="bg-zinc-800 hover:bg-orange-600 border border-zinc-700 hover:border-orange-500 text-white font-bold py-4 px-8 rounded-xl transition-all flex items-center gap-3 w-full justify-center shadow-lg group"
+            >
+              <span className="text-xl group-hover:scale-110 transition-transform">📷</span> 
+              <span>Track Lift in Real-Time</span>
+            </button>
+          </div>
+        )}
+
+        {/* How It Works Section */}
         <div className="w-full max-w-lg bg-white/5 border border-white/10 rounded-2xl p-5">
           <div className="flex items-center justify-between mb-4">
             <h3 className="font-bold text-white/80 text-sm uppercase tracking-wider">

@@ -11,12 +11,9 @@ import AuthModal       from "./AuthModal";
 import HistoryPage     from "./HistoryPage";
 import { useVideoAnalyser } from "@/hooks/useVideoAnalyser";
 import { useAuth }          from "@/context/AuthContext";
-
-// 🔥 1. Import your new LiveTracker!
-import { LiveTracker } from "@/components/LiveTracker";
+import { LiveTracker }      from "@/components/LiveTracker";
 
 export default function App() {
-  // We expand AppStage locally to include "live"
   const [stage,       setStage]       = useState<AppStage | "live">("upload");
   const [videoFile,   setVideoFile]   = useState<File | null>(null);
   const [calibration, setCalibration] = useState<CalibrationPoints | null>(null);
@@ -25,7 +22,6 @@ export default function App() {
   const [showAuth,    setShowAuth]    = useState(false);
   const [showHistory, setShowHistory] = useState(false);
 
-  // 🔥 2. Add state to hold the live tracking results
   const [liveResult, setLiveResult] = useState<AnalysisResult | null>(null);
 
   const { user, signOut } = useAuth();
@@ -34,7 +30,7 @@ export default function App() {
     analyse,
     progress,
     isAnalysing,
-    result: fileResult, // renamed to distinguish from liveResult
+    result: fileResult,
     error,
     liveFrames,
     liveFps,
@@ -63,28 +59,24 @@ export default function App() {
     setVideoFile(null);
     setCalibration(null);
     setLiftType("squat");
-    setLiveResult(null); // Clear live results on reset
+    setLiveResult(null); 
   };
 
-  // Determine which step index to highlight in the top progress bar
   const activeStepIndex = 
     stage === "upload" ? 0 : 
     (stage === "seed" || stage === "live") ? 1 : 
     stage === "analysing" ? 2 : 
     3;
 
-  // The active result is either from the video file upload or the live camera
   const activeResult = stage === "results" ? (fileResult || liveResult) : null;
 
   return (
     <main className="min-h-screen flex flex-col items-center bg-[#0f0f0f] text-white">
 
-      {/* Overlays */}
       {showHelp    && <HowItWorksModal onClose={() => setShowHelp(false)} />}
       {showAuth    && <AuthModal       onClose={() => setShowAuth(false)} />}
       {showHistory && <HistoryPage     onClose={() => setShowHistory(false)} />}
 
-      {/* Header */}
       <header className="w-full py-4 px-6 border-b border-white/10 flex items-center gap-3">
         <span className="text-2xl">🏋️</span>
         <h1 className="text-xl font-bold tracking-tight text-orange-400">
@@ -139,7 +131,6 @@ export default function App() {
         </div>
       </header>
 
-      {/* Step indicator */}
       <div className="flex gap-2 mt-6 mb-8">
         {(["upload", "setup", "analysing", "results"]).map((s, i) => (
           <div key={s} className="flex items-center gap-2">
@@ -162,23 +153,13 @@ export default function App() {
         ))}
       </div>
 
-      {/* Steps */}
       <div className="w-full max-w-4xl px-4 pb-16">
 
-        {/* 🔥 3. Updated Upload Step with "Live Camera" branch */}
         <div style={{ display: stage === "upload" ? "block" : "none" }}>
-          <UploadStep onFileAccepted={handleFileAccepted} />
-          
-          <div className="mt-8 pt-8 border-t border-white/10 flex flex-col items-center gap-4">
-            <p className="text-sm text-white/50">Or track your lift in real-time</p>
-            <button
-              onClick={() => setStage("live")}
-              className="bg-zinc-800 hover:bg-orange-600 border border-zinc-700 hover:border-orange-500 text-white font-bold py-4 px-8 rounded-xl transition-all flex items-center gap-3 w-full max-w-md justify-center shadow-lg"
-            >
-              <span className="text-xl">📷</span> 
-              <span>Start Live Camera</span>
-            </button>
-          </div>
+          <UploadStep 
+            onFileAccepted={handleFileAccepted} 
+            onStartLive={() => setStage("live")}
+          />
         </div>
 
         {stage === "seed" && videoFile && (
@@ -188,7 +169,6 @@ export default function App() {
           />
         )}
 
-        {/* 🔥 4. The new Live Tracking Step */}
         {stage === "live" && (
           <div className="w-full flex flex-col items-center animate-in fade-in zoom-in-95">
             <div className="mb-6 w-full max-w-md bg-zinc-900 p-4 rounded-xl border border-zinc-800">
@@ -209,18 +189,16 @@ export default function App() {
             <LiveTracker
               onCancel={() => setStage("upload")}
               onSetComplete={(frames, fps, width, height) => {
-            // Auto-estimate calibration for live tracking.
-            // Assuming a 45cm plate roughly takes up 1/5th of the video height at normal distance
-            const estimatedPxPerCm = (height / 5) / 45;
-            const finalPxPerCm = estimatedPxPerCm > 0 ? estimatedPxPerCm : 5;
+                const estimatedPxPerCm = (height / 5) / 45;
+                const finalPxPerCm = estimatedPxPerCm > 0 ? estimatedPxPerCm : 5;
 
-            setCalibration({
-              top: { x: 0, y: 0 },
-              bottom: { x: 0, y: finalPxPerCm * 45 },
-              diameterCm: 45,
-              pxPerCm: finalPxPerCm,
-              pxPerM: finalPxPerCm * 100,
-            });
+                setCalibration({
+                  top: { x: 0, y: 0 },
+                  bottom: { x: 0, y: finalPxPerCm * 45 },
+                  diameterCm: 45,
+                  pxPerCm: finalPxPerCm,
+                  pxPerM: finalPxPerCm * 100,
+                });
 
                 setLiveResult({
                   frames,
@@ -245,11 +223,9 @@ export default function App() {
           />
         )}
 
-        {/* 🔥 5. Results Step modified to handle live results gracefully */}
         {stage === "results" && activeResult && calibration && (
           <ResultsStep
             result={activeResult}
-            // If it's a live set, pass a dummy file so the component doesn't crash on URL.createObjectURL
             file={videoFile || new File([], "live-set.mp4", { type: "video/mp4" })}
             calibration={calibration}
             liftType={liftType}
