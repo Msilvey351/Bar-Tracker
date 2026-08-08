@@ -1,13 +1,11 @@
 import * as ort from "onnxruntime-web";
 
-// Next.js can be tricky with WASM files, so we pull the engine directly from a CDN
 ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/";
 
 let session: ort.InferenceSession | null = null;
 
 export async function loadModel() {
   if (!session) {
-    // Load your custom AI brain!
     session = await ort.InferenceSession.create("/best.onnx", {
       executionProviders: ["wasm"],
     });
@@ -18,9 +16,7 @@ export async function loadModel() {
 export async function detectBarbell(video: HTMLVideoElement) {
   if (!session) await loadModel();
 
-  const size = 640; // The resolution you trained the model at
-
-  // 1. Draw the current video frame to a hidden canvas
+  const size = 640; 
   const canvas = document.createElement("canvas");
   canvas.width = size;
   canvas.height = size;
@@ -31,34 +27,28 @@ export async function detectBarbell(video: HTMLVideoElement) {
   const imgData = ctx.getImageData(0, 0, size, size);
   const data = imgData.data;
 
-  // 2. Preprocess: Convert image to a 3D Tensor array for the AI (RGB, normalized 0-1)
   const float32Data = new Float32Array(3 * size * size);
   for (let i = 0; i < size * size; i++) {
-    float32Data[i] = data[i * 4] / 255.0; // R
-    float32Data[size * size + i] = data[i * 4 + 1] / 255.0; // G
-    float32Data[2 * size * size + i] = data[i * 4 + 2] / 255.0; // B
+    float32Data[i] = data[i * 4] / 255.0; 
+    float32Data[size * size + i] = data[i * 4 + 1] / 255.0; 
+    float32Data[2 * size * size + i] = data[i * 4 + 2] / 255.0; 
   }
 
   const tensor = new ort.Tensor("float32", float32Data, [1, 3, size, size]);
-
-  // 3. Run Inference (Ask the AI where the plate is)
   const results = await session!.run({ images: tensor });
   const output = results[session!.outputNames[0]];
 
-  // 4. Postprocess: Decode the YOLOv8 output
   const outData = output.data as Float32Array;
-  const numColumns = 8400; // YOLOv8 splits the image into 8400 possible boxes
+  const numColumns = 8400; 
 
   let bestScore = 0;
   let bestBox = null;
 
-  // YOLO output rows: [x, y, w, h, score_person, score_barbell]
-  // Row 5 is the Barbell class confidence score
   for (let col = 0; col < numColumns; col++) {
+    // Row 5 is the barbell class (Row 4 is person)
     const scoreBarbell = outData[5 * numColumns + col];
 
-    // If it's more than 50% confident it's a barbell, keep it
-    if (scoreBarbell > bestScore && scoreBarbell > 0.5) {
+    if (scoreBarbell > bestScore) {
       bestScore = scoreBarbell;
       bestBox = {
         x: outData[0 * numColumns + col],
@@ -69,9 +59,11 @@ export async function detectBarbell(video: HTMLVideoElement) {
     }
   }
 
-  if (!bestBox) return null;
+  console.log(`🧠 AI Best Confidence Score: ${(bestScore * 100).toFixed(1)}%`);
 
-  // 5. Map the 640x640 box back to your actual phone camera dimensions
+  // Lowered threshold to 25% to guarantee a catch
+  if (bestScore < 0.25 || !bestBox) return null;
+
   const scaleX = video.videoWidth / size;
   const scaleY = video.videoHeight / size;
 

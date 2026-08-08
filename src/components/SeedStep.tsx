@@ -27,28 +27,43 @@ export default function SeedStep({ file, onSeedSet }: SeedStepProps) {
 
   // 2. Load the AI Model
   useEffect(() => {
-    loadModel().then(() => setModelLoading(false));
+    loadModel()
+      .then(() => {
+        console.log("✅ AI Model Loaded Successfully");
+        setModelLoading(false);
+      })
+      .catch((err) => console.error("❌ Failed to load AI:", err));
   }, []);
 
-  // 3. Scan the first frame for the plate
-  const handleVideoLoaded = async () => {
-    if (!videoRef.current || modelLoading) return;
-    
-    // Ensure video is at the first frame
-    videoRef.current.currentTime = 0;
-    
-    // Give the browser a split second to render the frame
-    setTimeout(async () => {
-      const box = await detectBarbell(videoRef.current!);
-      
-      if (box) {
-        setAiBox(box);
+  // 3. ✨ NEW: Scan the frame only when BOTH the model and video are ready!
+  useEffect(() => {
+    if (modelLoading || !videoRef.current) return;
+
+    const scanFirstFrame = async () => {
+      try {
+        console.log("📸 Scanning first frame...");
+        const box = await detectBarbell(videoRef.current!);
         
-        // Found it! Start a 2-second countdown before auto-analyzing
-        setAutoStartCountdown(2);
+        if (box) {
+          console.log("🎯 Barbell Found!", box);
+          setAiBox(box);
+          setAutoStartCountdown(2);
+        } else {
+          console.log("🤷‍♂️ AI scanned but couldn't confidently find a plate.");
+        }
+      } catch (err) {
+        console.error("❌ Inference error:", err);
       }
-    }, 200);
-  };
+    };
+
+    // If video is already loaded, scan immediately. Otherwise, wait for it.
+    if (videoRef.current.readyState >= 2) {
+      scanFirstFrame();
+    } else {
+      videoRef.current.addEventListener('loadeddata', scanFirstFrame);
+      return () => videoRef.current?.removeEventListener('loadeddata', scanFirstFrame);
+    }
+  }, [modelLoading]); // This runs the moment modelLoading becomes false
 
   // 4. Handle the Countdown Timer
   useEffect(() => {
@@ -67,7 +82,6 @@ export default function SeedStep({ file, onSeedSet }: SeedStepProps) {
   const startAnalysis = () => {
     if (!aiBox) return;
 
-    // AI Box gives us the height of the 45cm plate in pixels
     const finalPxPerCm = aiBox.height / 45;
 
     const autoCalibration: CalibrationPoints = {
@@ -78,15 +92,12 @@ export default function SeedStep({ file, onSeedSet }: SeedStepProps) {
       pxPerM: finalPxPerCm * 100,
     };
 
-    // We pass the exact center of the AI box as the starting seed point
     const seedPoint: Point = { x: aiBox.x, y: aiBox.y };
-
     onSeedSet(seedPoint, autoCalibration, liftType);
   };
 
-  // Fallback: If AI fails, user can click it manually
   const handleManualClick = (e: React.MouseEvent<HTMLVideoElement>) => {
-    if (!videoRef.current || aiBox) return; // Only allow manual if AI failed
+    if (!videoRef.current || aiBox) return; 
     
     const rect = videoRef.current.getBoundingClientRect();
     const scaleX = videoRef.current.videoWidth / rect.width;
@@ -95,7 +106,6 @@ export default function SeedStep({ file, onSeedSet }: SeedStepProps) {
     const x = (e.clientX - rect.left) * scaleX;
     const y = (e.clientY - rect.top) * scaleY;
     
-    // Fallback guess: The plate is roughly 1/5th of the video height
     const guessedPlateHeight = videoRef.current.videoHeight / 5;
     const finalPxPerCm = guessedPlateHeight / 45;
 
@@ -145,14 +155,12 @@ export default function SeedStep({ file, onSeedSet }: SeedStepProps) {
       <div className="relative w-full aspect-[9/16] max-h-[60vh] bg-black rounded-lg overflow-hidden border border-zinc-800 shadow-xl flex items-center justify-center">
         <video
           ref={videoRef}
-          onLoadedData={handleVideoLoaded}
           onClick={handleManualClick}
           className="max-w-full max-h-full object-contain"
           playsInline
           muted
         />
 
-        {/* Draw the Green AI Box */}
         {aiBox && videoRef.current && (
           <div
             className="absolute border-2 border-emerald-500 bg-emerald-500/10 transition-all pointer-events-none shadow-[0_0_15px_rgba(16,185,129,0.3)]"
@@ -163,7 +171,6 @@ export default function SeedStep({ file, onSeedSet }: SeedStepProps) {
               height: `${(aiBox.height / videoRef.current.videoHeight) * 100}%`,
             }}
           >
-            {/* Draw a target dot in the exact center */}
             <div className="absolute top-1/2 left-1/2 w-2 h-2 bg-emerald-500 rounded-full transform -translate-x-1/2 -translate-y-1/2" />
           </div>
         )}
