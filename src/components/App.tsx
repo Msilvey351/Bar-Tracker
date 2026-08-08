@@ -11,7 +11,7 @@ import AuthModal       from "./AuthModal";
 import HistoryPage     from "./HistoryPage";
 import { useVideoAnalyser } from "@/hooks/useVideoAnalyser";
 import { useAuth }          from "@/context/AuthContext";
-import { LiveTracker }      from "@/components/LiveTracker";
+import { LiveTracker }      from "./LiveTracker";
 
 export default function App() {
   const [stage,       setStage]       = useState<AppStage | "live">("upload");
@@ -188,13 +188,15 @@ export default function App() {
 
             <LiveTracker
               onCancel={() => setStage("upload")}
-              onSetComplete={(frames, fps, width, height) => {
-                const estimatedPxPerCm = (height / 5) / 45;
-                const finalPxPerCm = estimatedPxPerCm > 0 ? estimatedPxPerCm : 5;
+              onSetComplete={(frames, fps, width, height, plateHeightPx) => {
+                
+                // 🔥 Auto-Calibration Math!
+                // The AI tells us exactly how tall the 45cm plate is in pixels.
+                const finalPxPerCm = plateHeightPx / 45; 
 
                 setCalibration({
                   top: { x: 0, y: 0 },
-                  bottom: { x: 0, y: finalPxPerCm * 45 },
+                  bottom: { x: 0, y: plateHeightPx }, 
                   diameterCm: 45,
                   pxPerCm: finalPxPerCm,
                   pxPerM: finalPxPerCm * 100,
