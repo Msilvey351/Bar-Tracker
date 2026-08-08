@@ -4,30 +4,26 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { AnalysisResult, FrameResult, Point } from "@/types";
 
 interface UseVideoAnalyserReturn {
-  analyse:       (file: File, seed: Point) => Promise<void>;
-  progress:      number;
-  isAnalysing:   boolean;
-  result:        AnalysisResult | null;
-  error:         string | null;
-  liveFrames:    FrameResult[];
-  liveFps:       number;
+  analyse: (file: File, seed: Point) => Promise<void>;
+  progress: number;
+  isAnalysing: boolean;
+  result: AnalysisResult | null;
+  error: string | null;
+  liveFrames: FrameResult[];
+  liveFps: number;
   liveVideoDims: { width: number; height: number } | null;
-  debugMsg:      string;
+  debugMsg: string;
 }
 
-const SCALED_WIDTH             = 320;
-const MAX_JUMP_HEIGHT_FRACTION = 0.18;
-const MIN_MAX_JUMP_PX          = 20;
-const SMOOTHING_WINDOW         = 3;
+// 🔥 OPTIMIZATION 1: Cut resolution in half. 
+// 160px is plenty for finding a massive weight plate, and is 4x faster than 320px.
+const SCALED_WIDTH = 160; 
 
-const isMobile = typeof navigator !== "undefined" &&
+const SMOOTHING_WINDOW = 3;
+
+const isMobile =
+  typeof navigator !== "undefined" &&
   /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
-
-function chooseAnalysisFps(durationSeconds: number): number {
-  if (durationSeconds <= 25) return 60;
-  if (durationSeconds <= 60) return 30;
-  return 24;
-}
 
 function distance(a: Point, b: Point): number {
   const dx = a.x - b.x;
@@ -38,7 +34,7 @@ function distance(a: Point, b: Point): number {
 function medianOf(values: number[]): number {
   if (!values.length) return 0;
   const sorted = [...values].sort((a, b) => a - b);
-  const mid    = Math.floor(sorted.length / 2);
+  const mid = Math.floor(sorted.length / 2);
   return sorted.length % 2 === 1
     ? sorted[mid]
     : (sorted[mid - 1] + sorted[mid]) / 2;
@@ -48,8 +44,8 @@ function smoothPositions(frames: FrameResult[]): FrameResult[] {
   if (frames.length < SMOOTHING_WINDOW) return frames;
   const half = Math.floor(SMOOTHING_WINDOW / 2);
   return frames.map((frame, i) => {
-    const lo    = Math.max(0, i - half);
-    const hi    = Math.min(frames.length - 1, i + half);
+    const lo = Math.max(0, i - half);
+    const hi = Math.min(frames.length - 1, i + half);
     const slice = frames.slice(lo, hi + 1);
     return {
       ...frame,
@@ -62,17 +58,17 @@ function smoothPositions(frames: FrameResult[]): FrameResult[] {
 }
 
 export function useVideoAnalyser(): UseVideoAnalyserReturn {
-  const [progress,      setProgress]      = useState(0);
-  const [isAnalysing,   setIsAnalysing]   = useState(false);
-  const [result,        setResult]        = useState<AnalysisResult | null>(null);
-  const [error,         setError]         = useState<string | null>(null);
-  const [liveFrames,    setLiveFrames]    = useState<FrameResult[]>([]);
-  const [liveFps,       setLiveFps]       = useState(0);
+  const [progress, setProgress] = useState(0);
+  const [isAnalysing, setIsAnalysing] = useState(false);
+  const [result, setResult] = useState<AnalysisResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [liveFrames, setLiveFrames] = useState<FrameResult[]>([]);
+  const [liveFps, setLiveFps] = useState(0);
   const [liveVideoDims, setLiveVideoDims] = useState<{ width: number; height: number } | null>(null);
-  const [debugMsg,      setDebugMsg]      = useState<string>("");
+  const [debugMsg, setDebugMsg] = useState<string>("");
 
   const workerRef = useRef<Worker | null>(null);
-  const abortRef  = useRef<AbortController | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   // ── Spin up initial worker ───────────────────────────────────────────────
   useEffect(() => {
@@ -99,13 +95,16 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
   // ── Worker communication ─────────────────────────────────────────────────
   const workerSend = useCallback(
     (
-      message:     Record<string, unknown>,
+      message: Record<string, unknown>,
       waitForType: string,
-      transfer?:   Transferable[]
+      transfer?: Transferable[]
     ): Promise<Record<string, unknown>> => {
       return new Promise((resolve) => {
         const worker = workerRef.current;
-        if (!worker) { resolve({}); return; }
+        if (!worker) {
+          resolve({});
+          return;
+        }
 
         const handler = (event: MessageEvent) => {
           if (event.data?.type === waitForType) {
@@ -145,30 +144,31 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
   );
 
   const workerTrack = useCallback(
-    async (frame: ImageData): Promise<{ x: number; y: number; confidence: number; tracked: boolean; }> => {
+    async (
+      frame: ImageData
+    ): Promise<{ x: number; y: number; confidence: number; tracked: boolean }> => {
       const result = await workerSend(
         { type: "track", imageData: frame },
         "result",
         [frame.data.buffer]
       );
-      return result as { x: number; y: number; confidence: number; tracked: boolean; };
+      return result as { x: number; y: number; confidence: number; tracked: boolean };
     },
     [workerSend]
   );
 
   const processFrame = useCallback(
     async (
-      imageData:     ImageData,
-      timeSeconds:   number,
-      frameIndex:    number,
-      scale:         number,
-      currentPoint:  { x: number; y: number },
+      imageData: ImageData,
+      timeSeconds: number,
+      frameIndex: number,
+      scale: number,
+      currentPoint: { x: number; y: number }
     ): Promise<{
-      newPoint:    { x: number; y: number };
+      newPoint: { x: number; y: number };
       frameResult: FrameResult;
     }> => {
-      
-      const tracked   = await workerTrack(imageData);
+      const tracked = await workerTrack(imageData);
       const newPoint = tracked.tracked ? { x: tracked.x, y: tracked.y } : currentPoint;
 
       return {
@@ -232,20 +232,19 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
       });
 
       const video = document.createElement("video");
-      video.muted       = true;
+      video.muted = true;
       video.playsInline = true;
-      video.preload     = "auto";
-      
-      // Kept hidden. Firefox Mobile is explicitly blocked at the upload step anyway.
-      video.style.cssText = "position:fixed; top:0; left:0; width:1px; height:1px; opacity:0.01; z-index:-9999; pointer-events:none;";
-      
+      video.preload = "auto";
+      video.style.cssText =
+        "position:fixed; top:0; left:0; width:1px; height:1px; opacity:0.01; z-index:-9999; pointer-events:none;";
       document.body.appendChild(video);
 
       const canvas = document.createElement("canvas");
       let url: string | null = null;
 
       try {
-        const safeFile = file.type === "" ? new Blob([file], { type: "video/mp4" }) : file;
+        const safeFile =
+          file.type === "" ? new Blob([file], { type: "video/mp4" }) : file;
         url = URL.createObjectURL(safeFile);
         video.src = url;
 
@@ -256,23 +255,21 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
         });
 
         await new Promise<void>((resolve) => {
-           if (video.readyState >= 3) {
-             resolve();
-           } else {
-             video.addEventListener("canplaythrough", () => resolve(), { once: true });
-             setTimeout(resolve, 5000);
-           }
+          if (video.readyState >= 3) {
+            resolve();
+          } else {
+            video.addEventListener("canplaythrough", () => resolve(), { once: true });
+            setTimeout(resolve, 5000);
+          }
         });
 
-        const duration    = video.duration;
-        const targetFps   = chooseAnalysisFps(duration); 
-        
-        const videoWidth  = video.videoWidth;
+        const duration = video.duration;
+        const videoWidth = video.videoWidth;
         const videoHeight = video.videoHeight;
-        const scale       = SCALED_WIDTH / videoWidth;
-        const scaledH     = Math.round(videoHeight * scale);
+        const scale = SCALED_WIDTH / videoWidth;
+        const scaledH = Math.round(videoHeight * scale);
 
-        canvas.width  = SCALED_WIDTH;
+        canvas.width = SCALED_WIDTH;
         canvas.height = scaledH;
         const ctx = canvas.getContext("2d", { willReadFrequently: true });
         if (!ctx) throw new Error("Could not get canvas context");
@@ -289,42 +286,43 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
         const supportsRVFC = typeof (video as any).requestVideoFrameCallback === "function";
 
         if (!supportsRVFC) {
-           throw new Error("Hardware video processing not supported. Please use Chrome or Safari.");
+          throw new Error("Hardware video processing not supported. Please use Chrome or Safari.");
         }
 
         console.log("Using fast requestVideoFrameCallback loop");
         setDebugMsg("Loop: Fast (RVFC)");
-        
+
         let framesProcessed = 0;
         let lastProcessedTime = -1;
-        
+
         await new Promise<void>((resolve, reject) => {
           let safetyTimeout: NodeJS.Timeout;
           let isFinished = false;
 
           const finish = () => {
-             if (isFinished) return;
-             isFinished = true;
-             clearTimeout(safetyTimeout);
-             video.pause();
-             resolve();
+            if (isFinished) return;
+            isFinished = true;
+            clearTimeout(safetyTimeout);
+            video.pause();
+            resolve();
           };
 
           const processNextFrame = async (now: number, metadata: VideoFrameCallbackMetadata) => {
             if (abortRef.current?.signal.aborted || isFinished) {
-              finish(); return;
+              finish();
+              return;
             }
             clearTimeout(safetyTimeout);
 
             const currentTime = metadata.mediaTime;
-            
+
             if (currentTime === lastProcessedTime) {
-               if (!video.ended && !video.paused) {
-                 video.requestVideoFrameCallback(processNextFrame);
-               } else {
-                 finish();
-               }
-               return;
+              if (!video.ended && !video.paused) {
+                video.requestVideoFrameCallback(processNextFrame);
+              } else {
+                finish();
+              }
+              return;
             }
             lastProcessedTime = currentTime;
 
@@ -341,7 +339,11 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
               });
             } else {
               const { newPoint, frameResult } = await processFrame(
-                imageData, currentTime, framesProcessed, scale, currentPoint
+                imageData,
+                currentTime,
+                framesProcessed,
+                scale,
+                currentPoint
               );
               currentPoint = newPoint;
               allFrames.push(frameResult);
@@ -349,41 +351,54 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
 
             framesProcessed++;
             if (framesProcessed % 10 === 0) {
-               setProgress(Math.round((currentTime / duration) * 100));
+              setProgress(Math.round((currentTime / duration) * 100));
             }
 
             if (!video.ended && currentTime < duration - 0.05) {
-               if (video.paused && !document.hidden) video.play().catch(reject);
-               
-               if (!document.hidden) {
-                 safetyTimeout = setTimeout(() => { finish(); }, 500);
-               }
-               video.requestVideoFrameCallback(processNextFrame);
+              if (video.paused && !document.hidden) video.play().catch(reject);
+
+              if (!document.hidden) {
+                safetyTimeout = setTimeout(() => {
+                  finish();
+                }, 500);
+              }
+              video.requestVideoFrameCallback(processNextFrame);
             } else {
-               finish();
+              finish();
             }
           };
 
           const handleVisibilityChange = () => {
-             if (document.hidden) {
-               clearTimeout(safetyTimeout);
-               video.pause();
-             } else {
-               if (!isFinished && !video.ended && video.currentTime < duration - 0.05) {
-                 video.play().catch(console.error);
-               }
-             }
+            if (document.hidden) {
+              clearTimeout(safetyTimeout);
+              video.pause();
+            } else {
+              if (!isFinished && !video.ended && video.currentTime < duration - 0.05) {
+                video.play().catch(console.error);
+              }
+            }
           };
-          
+
           document.addEventListener("visibilitychange", handleVisibilityChange);
           video.currentTime = 0;
+          
+          // 🔥 OPTIMIZATION 2: Play the video faster!
+          // Because memory transfer is 4x lighter now, the CPU can handle processing 
+          // the frames in fast-forward. A 30s video should finish in ~15s.
+          video.playbackRate = 2.0;
+
           video.requestVideoFrameCallback(processNextFrame);
           video.play().catch(reject);
-          
-          const cleanup = () => { document.removeEventListener("visibilitychange", handleVisibilityChange); };
+
+          const cleanup = () => {
+            document.removeEventListener("visibilitychange", handleVisibilityChange);
+          };
           const originalFinish = finish;
-          const finishWithCleanup = () => { cleanup(); originalFinish(); }
-          
+          const finishWithCleanup = () => {
+            cleanup();
+            originalFinish();
+          };
+
           video.removeEventListener("ended", finish);
           video.addEventListener("ended", finishWithCleanup, { once: true });
         });
@@ -401,7 +416,6 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
           videoHeight,
           durationSeconds: duration,
         });
-
       } catch (e) {
         setError(e instanceof Error ? e.message : "Unknown error");
       } finally {
