@@ -1,812 +1,174 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Point, CalibrationPoints, LiftType } from "@/types";
+import { loadModel, detectBarbell } from "@/lib/yolo";
 
-interface Props {
+interface SeedStepProps {
   file: File;
-  onSeedSet: (
-    point: Point,
-    calibration: CalibrationPoints,
-    liftType: LiftType
-  ) => void;
+  onSeedSet: (point: Point, cal: CalibrationPoints, lift: LiftType) => void;
 }
 
-type ClickStep = "bar" | "plateTop" | "plateBottom" | "done";
-
-const STEP_CONFIG: Record<
-  ClickStep,
-  { label: string; colour: string; hint: string }
-> = {
-  bar: {
-    label: "Step 1 of 3 — Position the crosshair on the weights",
-    colour: "#f97316",
-    hint: "Drag to move · tap Confirm when centred on the barbell sleeve",
-  },
-  plateTop: {
-    label: "Step 2 of 3 — Position the crosshair on the top of the plate",
-    colour: "#3b82f6",
-    hint: "Drag to move · tap Confirm when on the very top edge of the plate",
-  },
-  plateBottom: {
-    label: "Step 3 of 3 — Position the crosshair on the bottom of the plate",
-    colour: "#3b82f6",
-    hint: "Drag to move · tap Confirm when on the very bottom edge of the plate",
-  },
-  done: {
-    label: "All points set — ready to analyse",
-    colour: "#10b981",
-    hint: "",
-  },
-};
-
-const LIFTS: { id: LiftType; label: string; icon: string; hint: string }[] = [
-  { id: "squat", label: "Squat", icon: "🏋️", hint: "Bar goes down first" },
-  { id: "bench", label: "Bench", icon: "🔴", hint: "Bar goes down first" },
-  { id: "deadlift", label: "Deadlift", icon: "⬆️", hint: "Bar goes up first" },
-];
-
-function getDisplayedVideoSize(
-  containerW: number,
-  containerH: number,
-  videoW: number,
-  videoH: number
-) {
-  const containerAspect = containerW / containerH;
-  const videoAspect = videoW / videoH;
-
-  if (videoAspect > containerAspect) {
-    return { w: containerW, h: containerW / videoAspect };
-  }
-
-  return { w: containerH * videoAspect, h: containerH };
-}
-
-function isIOSDevice() {
-  if (typeof navigator === "undefined") return false;
-
-  return (
-    /iPad|iPhone|iPod/.test(navigator.userAgent) ||
-    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)
-  );
-}
-
-export default function SeedStep({ file, onSeedSet }: Props) {
+export default function SeedStep({ file, onSeedSet }: SeedStepProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const overlayRef = useRef<HTMLCanvasElement>(null);
-
-  const [ready, setReady] = useState(false);
-  const [metadataReady, setMetadataReady] = useState(false);
-  const [needsIOSFrameWake, setNeedsIOSFrameWake] = useState(false);
-  const [videoError, setVideoError] = useState<string | null>(null);
-  const [videoUrl, setVideoUrl] = useState<string>("");
-  const [videoNativeDims, setVideoNativeDims] = useState({ w: 1, h: 1 });
-
-  const [step, setStep] = useState<ClickStep>("bar");
-  const [barPoint, setBarPoint] = useState<Point | null>(null);
-  const [plateTop, setPlateTop] = useState<Point | null>(null);
-  const [plateBot, setPlateBot] = useState<Point | null>(null);
-  const [diameter, setDiameter] = useState<number>(45);
+  
   const [liftType, setLiftType] = useState<LiftType>("squat");
-  const [crosshairPos, setCrosshairPos] = useState({ x: 0, y: 0 });
+  const [modelLoading, setModelLoading] = useState(true);
+  const [aiBox, setAiBox] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
+  const [autoStartCountdown, setAutoStartCountdown] = useState<number | null>(null);
 
-  const crosshairPosRef = useRef({ x: 0, y: 0 });
-  const draggingRef = useRef(false);
-
-  const updateCrosshair = useCallback((x: number, y: number) => {
-    crosshairPosRef.current = { x, y };
-    setCrosshairPos({ x, y });
-  }, []);
-
-  const markVideoReady = useCallback(() => {
-    const video = videoRef.current;
-    if (!video) return;
-
-    if (video.videoWidth && video.videoHeight) {
-      setVideoNativeDims({
-        w: video.videoWidth,
-        h: video.videoHeight,
-      });
-
-      setReady(true);
-      setNeedsIOSFrameWake(false);
-      setVideoError(null);
-    }
-  }, []);
-
-  const wakeIOSVideoFrame = useCallback(async () => {
-    const video = videoRef.current;
-    if (!video) return;
-
-    try {
-      setVideoError(null);
-
-      video.muted = true;
-      video.playsInline = true;
-
-      /**
-       * iOS/WebKit often will not paint a local video frame until playback
-       * begins from a real user gesture. This function is called by tapping
-       * the "Show Video Frame" button, so WebKit allows it.
-       */
-      await video.play();
-
-      /**
-       * Give WebKit a brief moment to decode/paint a frame, then pause.
-       * Keep this short so the video barely advances.
-       */
-      await new Promise((resolve) => window.setTimeout(resolve, 120));
-
-      video.pause();
-
-      if (video.videoWidth && video.videoHeight) {
-        setVideoNativeDims({
-          w: video.videoWidth,
-          h: video.videoHeight,
-        });
-
-        setReady(true);
-        setNeedsIOSFrameWake(false);
-        setVideoError(null);
-      }
-    } catch (err) {
-      console.error("Could not wake iOS video frame:", err);
-
-      setVideoError(
-        "iOS could not display the first frame automatically. Try tapping the video/play control, then pause it before placing points."
-      );
-    }
-  }, []);
-
-  // ── Load Video ──────────────────────────────────────────────────────────────
+  // 1. Load the video file
   useEffect(() => {
-    if (!file) return;
-
-    setReady(false);
-    setMetadataReady(false);
-    setNeedsIOSFrameWake(false);
-    setVideoError(null);
-    setVideoNativeDims({ w: 1, h: 1 });
-
-    setBarPoint(null);
-    setPlateTop(null);
-    setPlateBot(null);
-    setStep("bar");
-
-    console.log("SeedStep received file:", {
-      name: file.name,
-      type: file.type,
-      size: `${(file.size / 1024 / 1024).toFixed(2)} MB`,
-      rawSize: file.size,
-      lastModified: file.lastModified,
-      isIOS: isIOSDevice(),
-    });
-
+    if (!file || !videoRef.current) return;
     const url = URL.createObjectURL(file);
-    setVideoUrl(url);
-
-    return () => {
-      URL.revokeObjectURL(url);
-    };
+    videoRef.current.src = url;
+    return () => URL.revokeObjectURL(url);
   }, [file]);
 
-  // ── Center Crosshair on Load ────────────────────────────────────────────────
+  // 2. Load the AI Model
   useEffect(() => {
-    if (!ready) return;
+    loadModel().then(() => setModelLoading(false));
+  }, []);
 
-    const timeout = window.setTimeout(() => {
-      const container = containerRef.current;
-      if (!container) return;
-
-      const cRect = container.getBoundingClientRect();
-      const displayed = getDisplayedVideoSize(
-        cRect.width,
-        cRect.height,
-        videoNativeDims.w,
-        videoNativeDims.h
-      );
-
-      updateCrosshair(displayed.w / 2, displayed.h / 2);
-    }, 50);
-
-    return () => window.clearTimeout(timeout);
-  }, [ready, videoNativeDims, updateCrosshair]);
-
-  // ── Coordinate Conversion ───────────────────────────────────────────────────
-  const getEventToVideoCssCoords = useCallback(
-    (clientX: number, clientY: number) => {
-      const container = containerRef.current;
-
-      if (!container) return { x: 0, y: 0 };
-
-      const cRect = container.getBoundingClientRect();
-      const displayed = getDisplayedVideoSize(
-        cRect.width,
-        cRect.height,
-        videoNativeDims.w,
-        videoNativeDims.h
-      );
-
-      const xOffset = (cRect.width - displayed.w) / 2;
-      const yOffset = (cRect.height - displayed.h) / 2;
-
-      return {
-        x: Math.max(0, Math.min(displayed.w, clientX - cRect.left - xOffset)),
-        y: Math.max(0, Math.min(displayed.h, clientY - cRect.top - yOffset)),
-      };
-    },
-    [videoNativeDims]
-  );
-
-  // ── Drag Handlers ───────────────────────────────────────────────────────────
-  const onMouseDown = (e: React.MouseEvent) => {
-    e.preventDefault();
-
-    draggingRef.current = true;
-
-    const c = getEventToVideoCssCoords(e.clientX, e.clientY);
-    updateCrosshair(c.x, c.y);
+  // 3. Scan the first frame for the plate
+  const handleVideoLoaded = async () => {
+    if (!videoRef.current || modelLoading) return;
+    
+    // Ensure video is at the first frame
+    videoRef.current.currentTime = 0;
+    
+    // Give the browser a split second to render the frame
+    setTimeout(async () => {
+      const box = await detectBarbell(videoRef.current!);
+      
+      if (box) {
+        setAiBox(box);
+        
+        // Found it! Start a 2-second countdown before auto-analyzing
+        setAutoStartCountdown(2);
+      }
+    }, 200);
   };
 
+  // 4. Handle the Countdown Timer
   useEffect(() => {
-    const onMouseMove = (e: MouseEvent) => {
-      if (!draggingRef.current) return;
-
-      const c = getEventToVideoCssCoords(e.clientX, e.clientY);
-      updateCrosshair(c.x, c.y);
-    };
-
-    const onMouseUp = () => {
-      draggingRef.current = false;
-    };
-
-    window.addEventListener("mousemove", onMouseMove);
-    window.addEventListener("mouseup", onMouseUp);
-
-    return () => {
-      window.removeEventListener("mousemove", onMouseMove);
-      window.removeEventListener("mouseup", onMouseUp);
-    };
-  }, [getEventToVideoCssCoords, updateCrosshair]);
-
-  const onTouchStart = (e: React.TouchEvent) => {
-    e.preventDefault();
-
-    draggingRef.current = true;
-
-    const t = e.touches[0];
-    const c = getEventToVideoCssCoords(t.clientX, t.clientY);
-
-    updateCrosshair(c.x, c.y);
-  };
-
-  useEffect(() => {
-    const onTouchMove = (e: TouchEvent) => {
-      if (!draggingRef.current) return;
-
-      e.preventDefault();
-
-      const t = e.touches[0];
-      const c = getEventToVideoCssCoords(t.clientX, t.clientY);
-
-      updateCrosshair(c.x, c.y);
-    };
-
-    const onTouchEnd = () => {
-      draggingRef.current = false;
-    };
-
-    window.addEventListener("touchmove", onTouchMove, { passive: false });
-    window.addEventListener("touchend", onTouchEnd);
-
-    return () => {
-      window.removeEventListener("touchmove", onTouchMove);
-      window.removeEventListener("touchend", onTouchEnd);
-    };
-  }, [getEventToVideoCssCoords, updateCrosshair]);
-
-  // ── Draw Confirmed Markers ──────────────────────────────────────────────────
-  useEffect(() => {
-    const canvas = overlayRef.current;
-    const container = containerRef.current;
-
-    if (!canvas || !container || !ready) return;
-
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    const cRect = container.getBoundingClientRect();
-
-    canvas.width = cRect.width;
-    canvas.height = cRect.height;
-
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    const displayed = getDisplayedVideoSize(
-      cRect.width,
-      cRect.height,
-      videoNativeDims.w,
-      videoNativeDims.h
-    );
-
-    const xOffset = (cRect.width - displayed.w) / 2;
-    const yOffset = (cRect.height - displayed.h) / 2;
-
-    const nativeToCss = (pt: Point) => ({
-      x: (pt.x / videoNativeDims.w) * displayed.w + xOffset,
-      y: (pt.y / videoNativeDims.h) * displayed.h + yOffset,
-    });
-
-    const barCss = barPoint ? nativeToCss(barPoint) : null;
-    const topCss = plateTop ? nativeToCss(plateTop) : null;
-    const botCss = plateBot ? nativeToCss(plateBot) : null;
-
-    if (topCss && botCss) {
-      ctx.strokeStyle = "#3b82f6";
-      ctx.lineWidth = 2;
-      ctx.setLineDash([6, 4]);
-
-      ctx.beginPath();
-      ctx.moveTo(topCss.x, topCss.y);
-      ctx.lineTo(botCss.x, botCss.y);
-      ctx.stroke();
-
-      ctx.setLineDash([]);
-
-      ctx.fillStyle = "#3b82f6";
-      ctx.font = "bold 13px monospace";
-      ctx.fillText(
-        `${diameter} cm`,
-        (topCss.x + botCss.x) / 2 + 10,
-        (topCss.y + botCss.y) / 2
-      );
+    if (autoStartCountdown === null) return;
+    
+    if (autoStartCountdown > 0) {
+      const timer = setTimeout(() => setAutoStartCountdown(autoStartCountdown - 1), 1000);
+      return () => clearTimeout(timer);
+    } 
+    
+    if (autoStartCountdown === 0 && aiBox) {
+      startAnalysis();
     }
+  }, [autoStartCountdown, aiBox]);
 
-    const drawMarker = (pt: Point, colour: string, label: string) => {
-      const r = 12;
+  const startAnalysis = () => {
+    if (!aiBox) return;
 
-      ctx.beginPath();
-      ctx.arc(pt.x, pt.y, r, 0, Math.PI * 2);
-      ctx.strokeStyle = colour;
-      ctx.lineWidth = 2.5;
-      ctx.stroke();
+    // AI Box gives us the height of the 45cm plate in pixels
+    const finalPxPerCm = aiBox.height / 45;
 
-      ctx.beginPath();
-      ctx.arc(pt.x, pt.y, r * 0.25, 0, Math.PI * 2);
-      ctx.fillStyle = "#fff";
-      ctx.fill();
-
-      ctx.strokeStyle = colour;
-      ctx.lineWidth = 1.5;
-
-      ctx.beginPath();
-      ctx.moveTo(pt.x - r * 1.5, pt.y);
-      ctx.lineTo(pt.x + r * 1.5, pt.y);
-      ctx.stroke();
-
-      ctx.beginPath();
-      ctx.moveTo(pt.x, pt.y - r * 1.5);
-      ctx.lineTo(pt.x, pt.y + r * 1.5);
-      ctx.stroke();
-
-      ctx.fillStyle = colour;
-      ctx.font = "bold 12px monospace";
-      ctx.fillText(label, pt.x + r + 4, pt.y - 4);
+    const autoCalibration: CalibrationPoints = {
+      top: { x: 0, y: 0 },
+      bottom: { x: 0, y: aiBox.height },
+      diameterCm: 45,
+      pxPerCm: finalPxPerCm,
+      pxPerM: finalPxPerCm * 100,
     };
 
-    if (topCss) drawMarker(topCss, "#3b82f6", "TOP");
-    if (botCss) drawMarker(botCss, "#3b82f6", "BOT");
-    if (barCss) drawMarker(barCss, "#f97316", "BAR");
-  }, [barPoint, plateTop, plateBot, diameter, ready, videoNativeDims]);
+    // We pass the exact center of the AI box as the starting seed point
+    const seedPoint: Point = { x: aiBox.x, y: aiBox.y };
 
-  // ── Actions ─────────────────────────────────────────────────────────────────
-  const handleConfirmPosition = () => {
-    const container = containerRef.current;
+    onSeedSet(seedPoint, autoCalibration, liftType);
+  };
 
-    if (!container) return;
+  // Fallback: If AI fails, user can click it manually
+  const handleManualClick = (e: React.MouseEvent<HTMLVideoElement>) => {
+    if (!videoRef.current || aiBox) return; // Only allow manual if AI failed
+    
+    const rect = videoRef.current.getBoundingClientRect();
+    const scaleX = videoRef.current.videoWidth / rect.width;
+    const scaleY = videoRef.current.videoHeight / rect.height;
+    
+    const x = (e.clientX - rect.left) * scaleX;
+    const y = (e.clientY - rect.top) * scaleY;
+    
+    // Fallback guess: The plate is roughly 1/5th of the video height
+    const guessedPlateHeight = videoRef.current.videoHeight / 5;
+    const finalPxPerCm = guessedPlateHeight / 45;
 
-    const cRect = container.getBoundingClientRect();
-    const displayed = getDisplayedVideoSize(
-      cRect.width,
-      cRect.height,
-      videoNativeDims.w,
-      videoNativeDims.h
-    );
-
-    const nativePoint = {
-      x: (crosshairPosRef.current.x / displayed.w) * videoNativeDims.w,
-      y: (crosshairPosRef.current.y / displayed.h) * videoNativeDims.h,
+    const fallbackCalibration: CalibrationPoints = {
+      top: { x: 0, y: 0 },
+      bottom: { x: 0, y: guessedPlateHeight },
+      diameterCm: 45,
+      pxPerCm: finalPxPerCm,
+      pxPerM: finalPxPerCm * 100,
     };
 
-    if (step === "bar") {
-      setBarPoint(nativePoint);
-      setStep("plateTop");
-    } else if (step === "plateTop") {
-      setPlateTop(nativePoint);
-      setStep("plateBottom");
-    } else if (step === "plateBottom") {
-      setPlateBot(nativePoint);
-      setStep("done");
-    }
+    onSeedSet({ x, y }, fallbackCalibration, liftType);
   };
-
-  const reset = () => {
-    setBarPoint(null);
-    setPlateTop(null);
-    setPlateBot(null);
-    setStep("bar");
-
-    const container = containerRef.current;
-
-    if (container) {
-      const cRect = container.getBoundingClientRect();
-      const displayed = getDisplayedVideoSize(
-        cRect.width,
-        cRect.height,
-        videoNativeDims.w,
-        videoNativeDims.h
-      );
-
-      updateCrosshair(displayed.w / 2, displayed.h / 2);
-    }
-  };
-
-  const handleSubmit = () => {
-    if (!barPoint || !plateTop || !plateBot) return;
-
-    const pixelDiameter = Math.abs(plateBot.y - plateTop.y);
-    const pxPerCm = pixelDiameter / diameter;
-
-    onSeedSet(
-      barPoint,
-      {
-        top: plateTop,
-        bottom: plateBot,
-        diameterCm: diameter,
-        pxPerCm,
-        pxPerM: pxPerCm * 100,
-      },
-      liftType
-    );
-  };
-
-  const config = STEP_CONFIG[step];
-
-  // Crosshair absolute position
-  let crosshairAbsoluteX = 0;
-  let crosshairAbsoluteY = 0;
-
-  if (containerRef.current) {
-    const cRect = containerRef.current.getBoundingClientRect();
-    const displayed = getDisplayedVideoSize(
-      cRect.width,
-      cRect.height,
-      videoNativeDims.w,
-      videoNativeDims.h
-    );
-
-    crosshairAbsoluteX = crosshairPos.x + (cRect.width - displayed.w) / 2;
-    crosshairAbsoluteY = crosshairPos.y + (cRect.height - displayed.h) / 2;
-  }
 
   return (
-    <div className="flex flex-col items-center gap-5">
-      {/* Title */}
-      <div className="text-center">
-        <h2 className="text-2xl font-bold">Set Tracking Points</h2>
-        <p className="text-white/40 text-sm mt-1">
-          Select your lift, drag the crosshair, then tap Confirm — 3 points
-          total
-        </p>
+    <div className="flex flex-col items-center max-w-lg mx-auto w-full gap-6 animate-in fade-in slide-in-from-bottom-4">
+      
+      <div className="w-full bg-zinc-900 p-4 rounded-xl border border-zinc-800 shadow-lg">
+        <label className="block text-sm font-semibold text-white/80 mb-2">
+          What lift is this?
+        </label>
+        <select
+          value={liftType}
+          onChange={(e) => setLiftType(e.target.value as LiftType)}
+          className="w-full bg-black border border-zinc-700 rounded-lg p-3 text-white focus:border-orange-500 outline-none transition-colors"
+        >
+          <option value="squat">Squat</option>
+          <option value="bench">Bench Press</option>
+          <option value="deadlift">Deadlift</option>
+        </select>
       </div>
 
-      {/* Lift Type Selector */}
-      <div className="w-full max-w-3xl">
-        <p className="text-white/50 text-xs font-semibold uppercase tracking-wider mb-2">
-          Lift Type
-        </p>
-
-        <div className="flex gap-2">
-          {LIFTS.map((lift) => (
-            <button
-              key={lift.id}
-              onClick={() => setLiftType(lift.id)}
-              className={`
-                flex-1 py-3 rounded-xl border-2 font-semibold text-sm
-                transition-all flex flex-col items-center gap-1
-                ${
-                  liftType === lift.id
-                    ? "border-orange-500 bg-orange-500/20 text-orange-400"
-                    : "border-white/10 bg-white/5 text-white/50 hover:border-white/20 hover:text-white/70"
-                }
-              `}
-            >
-              <span className="text-xl">{lift.icon}</span>
-              <span>{lift.label}</span>
-              <span className="text-xs font-normal opacity-60">
-                {lift.hint}
-              </span>
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Step indicator */}
-      <div className="flex items-center gap-3">
-        {(["bar", "plateTop", "plateBottom"] as ClickStep[]).map((s, i) => {
-          const isDone =
-            ["bar", "plateTop", "plateBottom", "done"].indexOf(step) > i;
-
-          return (
-            <div key={s} className="flex items-center gap-3">
-              <div
-                className={`
-                  w-8 h-8 rounded-full flex items-center justify-center
-                  text-xs font-bold border-2 transition-all
-                  ${
-                    step === s
-                      ? "border-orange-500 bg-orange-500 text-white"
-                      : isDone
-                      ? "border-emerald-500 bg-emerald-500/20 text-emerald-400"
-                      : "border-white/20 text-white/30"
-                  }
-                `}
-              >
-                {isDone ? "✓" : i + 1}
-              </div>
-
-              {i < 2 && <div className="w-6 h-px bg-white/20" />}
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Instruction banner */}
-      <div
-        className="w-full max-w-3xl px-4 py-3 rounded-xl border text-sm font-medium text-center transition-all"
-        style={{
-          borderColor: config.colour + "60",
-          background: config.colour + "15",
-          color: config.colour,
-        }}
-      >
-        {config.label}
-        {config.hint && (
-          <p className="text-xs font-normal mt-0.5 opacity-70">
-            {config.hint}
+      <div className="text-center space-y-1 h-12 flex flex-col justify-center">
+        {modelLoading ? (
+          <p className="text-sm text-orange-400 animate-pulse">Loading AI Vision...</p>
+        ) : aiBox ? (
+          <p className="text-sm text-emerald-400 font-bold">
+            Plate found! Starting in {autoStartCountdown}...
+          </p>
+        ) : (
+          <p className="text-sm text-white/50">
+            If AI can't find the plate, tap the barbell to start.
           </p>
         )}
       </div>
 
-      {/* Video Container */}
-      <div
-        ref={containerRef}
-        className="relative w-full max-w-3xl rounded-xl overflow-hidden border border-white/10 bg-black select-none"
-        style={{ height: "65vh" }}
-      >
-        {!ready && (
-          <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-black p-6 text-center text-sm">
-            {videoError ? (
-              <div className="text-red-400">
-                <p className="font-bold mb-2">Video Load Failed</p>
-                <p className="text-sm">{videoError}</p>
-              </div>
-            ) : needsIOSFrameWake && metadataReady ? (
-              <div className="flex flex-col items-center gap-3">
-                <p className="max-w-sm text-white/50 text-sm leading-relaxed">
-                  iOS loaded the video, but needs a tap to display the first
-                  frame.
-                </p>
-
-                <button
-                  type="button"
-                  onClick={wakeIOSVideoFrame}
-                  className="px-5 py-2 rounded-xl bg-orange-500 hover:bg-orange-600 text-white font-bold text-sm transition-colors"
-                >
-                  Show Video Frame
-                </button>
-              </div>
-            ) : (
-              <span className="text-white/40 text-sm">Loading video…</span>
-            )}
-          </div>
-        )}
-
-        {videoUrl && (
-          <video
-            key={videoUrl}
-            ref={videoRef}
-            src={videoUrl}
-            playsInline
-            muted
-            preload="auto"
-            className="w-full h-full object-contain"
-            onLoadedMetadata={(e) => {
-              const video = e.currentTarget;
-
-              if (video.videoWidth && video.videoHeight) {
-                setVideoNativeDims({
-                  w: video.videoWidth,
-                  h: video.videoHeight,
-                });
-
-                setMetadataReady(true);
-                setVideoError(null);
-
-                /**
-                 * Android / desktop:
-                 * Metadata is enough to unblock the UI and avoids old Android
-                 * decoded-frame hangs.
-                 *
-                 * iOS:
-                 * Metadata can arrive before WebKit paints an actual frame,
-                 * causing a black square. Ask for a real tap to wake playback.
-                 */
-                if (isIOSDevice()) {
-                  setNeedsIOSFrameWake(true);
-                } else {
-                  setReady(true);
-                }
-              }
-            }}
-            onLoadedData={() => {
-              /**
-               * loadeddata means a frame is available. If iOS reaches this,
-               * the frame should be paintable, so it is safe to mark ready.
-               */
-              markVideoReady();
-            }}
-            onCanPlay={() => {
-              markVideoReady();
-            }}
-            onPlaying={() => {
-              markVideoReady();
-            }}
-            onError={(e) => {
-              const err = e.currentTarget.error;
-
-              setVideoError(
-                err
-                  ? `Code ${err.code}: ${
-                      err.message || "Browser could not decode or read this file."
-                    }`
-                  : "Video load failed"
-              );
-            }}
-          />
-        )}
-
-        <canvas
-          ref={overlayRef}
-          className="absolute inset-0 w-full h-full"
-          style={{ pointerEvents: "none" }}
+      <div className="relative w-full aspect-[9/16] max-h-[60vh] bg-black rounded-lg overflow-hidden border border-zinc-800 shadow-xl flex items-center justify-center">
+        <video
+          ref={videoRef}
+          onLoadedData={handleVideoLoaded}
+          onClick={handleManualClick}
+          className="max-w-full max-h-full object-contain"
+          playsInline
+          muted
         />
 
-        {/* Draggable crosshair */}
-        {ready && step !== "done" && (
+        {/* Draw the Green AI Box */}
+        {aiBox && videoRef.current && (
           <div
-            className="absolute z-20 pointer-events-auto"
+            className="absolute border-2 border-emerald-500 bg-emerald-500/10 transition-all pointer-events-none shadow-[0_0_15px_rgba(16,185,129,0.3)]"
             style={{
-              left: crosshairAbsoluteX,
-              top: crosshairAbsoluteY,
-              transform: "translate(-50%, -50%)",
-              cursor: "grab",
-              touchAction: "none",
+              left: `${((aiBox.x - aiBox.width / 2) / videoRef.current.videoWidth) * 100}%`,
+              top: `${((aiBox.y - aiBox.height / 2) / videoRef.current.videoHeight) * 100}%`,
+              width: `${(aiBox.width / videoRef.current.videoWidth) * 100}%`,
+              height: `${(aiBox.height / videoRef.current.videoHeight) * 100}%`,
             }}
-            onMouseDown={onMouseDown}
-            onTouchStart={onTouchStart}
           >
-            <div
-              className="rounded-full border-2 flex items-center justify-center"
-              style={{
-                width: 32,
-                height: 32,
-                borderColor: config.colour,
-                background: config.colour + "22",
-              }}
-            >
-              <div
-                className="w-1.5 h-1.5 rounded-full"
-                style={{ background: config.colour }}
-              />
-            </div>
-
-            <div
-              className="absolute top-1/2 -translate-y-1/2"
-              style={{
-                left: -16,
-                width: 16,
-                height: 2,
-                background: config.colour,
-              }}
-            />
-            <div
-              className="absolute top-1/2 -translate-y-1/2"
-              style={{
-                right: -16,
-                width: 16,
-                height: 2,
-                background: config.colour,
-              }}
-            />
-            <div
-              className="absolute left-1/2 -translate-x-1/2"
-              style={{
-                top: -16,
-                width: 2,
-                height: 16,
-                background: config.colour,
-              }}
-            />
-            <div
-              className="absolute left-1/2 -translate-x-1/2"
-              style={{
-                bottom: -16,
-                width: 2,
-                height: 16,
-                background: config.colour,
-              }}
-            />
+            {/* Draw a target dot in the exact center */}
+            <div className="absolute top-1/2 left-1/2 w-2 h-2 bg-emerald-500 rounded-full transform -translate-x-1/2 -translate-y-1/2" />
           </div>
         )}
       </div>
 
-      {/* Confirm button */}
-      {ready && step !== "done" && (
-        <button
-          onClick={handleConfirmPosition}
-          className="px-8 py-3 font-bold rounded-xl transition-colors text-white text-base shadow-lg"
-          style={{ background: config.colour }}
-        >
-          ✓ Confirm{" "}
-          {step === "bar"
-            ? "Bar Position"
-            : step === "plateTop"
-            ? "Plate Top"
-            : "Plate Bottom"}
-        </button>
-      )}
-
-      {/* Diameter input */}
-      <div className="w-full max-w-3xl flex flex-wrap gap-4 items-center justify-between bg-white/5 border border-white/10 rounded-xl px-5 py-4">
-        <div className="flex items-center gap-3">
-          <label className="text-white/50 text-sm whitespace-nowrap">
-            Plate diameter:
-          </label>
-
-          <div className="flex items-center gap-2">
-            <input
-              type="number"
-              value={diameter}
-              onChange={(e) => setDiameter(Number(e.target.value))}
-              min={10}
-              max={100}
-              step={0.5}
-              className="w-20 bg-white/10 border border-white/20 rounded-lg px-3 py-1.5 text-white text-sm font-mono text-center focus:outline-none focus:border-orange-500"
-            />
-
-            <span className="text-white/40 text-sm">cm</span>
-          </div>
-        </div>
-
-        <button
-          onClick={reset}
-          className="text-xs text-white/30 hover:text-white/60 transition-colors underline underline-offset-2"
-        >
-          Reset all points
-        </button>
-      </div>
-
-      {/* Start Analysis */}
-      {step === "done" && barPoint && plateTop && plateBot && (
-        <button
-          onClick={handleSubmit}
-          className="px-8 py-3 bg-orange-500 hover:bg-orange-600 text-white font-bold rounded-xl transition-colors text-lg shadow-lg shadow-orange-500/20"
-        >
-          Start Analysis →
-        </button>
-      )}
     </div>
   );
 }
