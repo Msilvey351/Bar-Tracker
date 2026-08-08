@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import type { AppStage, Point, CalibrationPoints, LiftType } from "@/types";
+import type { AppStage, Point, CalibrationPoints, LiftType, AnalysisResult } from "@/types";
 import UploadStep      from "./UploadStep";
 import SeedStep        from "./SeedStep";
 import AnalysisStep    from "./AnalysisStep";
@@ -12,8 +12,12 @@ import HistoryPage     from "./HistoryPage";
 import { useVideoAnalyser } from "@/hooks/useVideoAnalyser";
 import { useAuth }          from "@/context/AuthContext";
 
+// 🔥 1. Import your new LiveTracker!
+import { LiveTracker } from "@/components/LiveTracker";
+
 export default function App() {
-  const [stage,       setStage]       = useState<AppStage>("upload");
+  // We expand AppStage locally to include "live"
+  const [stage,       setStage]       = useState<AppStage | "live">("upload");
   const [videoFile,   setVideoFile]   = useState<File | null>(null);
   const [calibration, setCalibration] = useState<CalibrationPoints | null>(null);
   const [liftType,    setLiftType]    = useState<LiftType>("squat");
@@ -21,13 +25,16 @@ export default function App() {
   const [showAuth,    setShowAuth]    = useState(false);
   const [showHistory, setShowHistory] = useState(false);
 
+  // 🔥 2. Add state to hold the live tracking results
+  const [liveResult, setLiveResult] = useState<AnalysisResult | null>(null);
+
   const { user, signOut } = useAuth();
 
   const {
     analyse,
     progress,
     isAnalysing,
-    result,
+    result: fileResult, // renamed to distinguish from liveResult
     error,
     liveFrames,
     liveFps,
@@ -56,7 +63,18 @@ export default function App() {
     setVideoFile(null);
     setCalibration(null);
     setLiftType("squat");
+    setLiveResult(null); // Clear live results on reset
   };
+
+  // Determine which step index to highlight in the top progress bar
+  const activeStepIndex = 
+    stage === "upload" ? 0 : 
+    (stage === "seed" || stage === "live") ? 1 : 
+    stage === "analysing" ? 2 : 
+    3;
+
+  // The active result is either from the video file upload or the live camera
+  const activeResult = stage === "results" ? (fileResult || liveResult) : null;
 
   return (
     <main className="min-h-screen flex flex-col items-center bg-[#0f0f0f] text-white">
@@ -68,39 +86,29 @@ export default function App() {
 
       {/* Header */}
       <header className="w-full py-4 px-6 border-b border-white/10 flex items-center gap-3">
-
-        {/* Logo */}
         <span className="text-2xl">🏋️</span>
         <h1 className="text-xl font-bold tracking-tight text-orange-400">
           Barbell Tracker
         </h1>
 
-        {/* Calibration badge */}
         {calibration && (
           <span className="ml-2 text-xs text-emerald-400 font-mono bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">
             {calibration.pxPerCm.toFixed(1)} px/cm · {calibration.diameterCm}cm plate
           </span>
         )}
 
-        {/* Right side */}
         <div className="ml-auto flex items-center gap-3">
-
           {user ? (
             <div className="flex items-center gap-2">
-              {/* Email */}
               <span className="text-white/40 text-xs hidden sm:block truncate max-w-[8rem]">
                 {user.email}
               </span>
-
-              {/* History button */}
               <button
                 onClick={() => setShowHistory(true)}
                 className="text-xs text-white/70 hover:text-white transition-colors border border-white/10 hover:border-white/20 rounded-lg px-2 py-1"
               >
                 📋 History
               </button>
-
-              {/* Sign out */}
               <button
                 onClick={signOut}
                 className="text-xs text-white/40 hover:text-white/70 transition-colors border border-white/10 hover:border-white/20 rounded-lg px-2 py-1"
@@ -117,7 +125,6 @@ export default function App() {
             </button>
           )}
 
-          {/* Help */}
           <button
             onClick={() => setShowHelp(true)}
             className="w-7 h-7 rounded-full border border-white/20 hover:border-orange-500/60 hover:bg-orange-500/10 flex items-center justify-center text-white/40 hover:text-orange-400 transition-all text-sm font-bold"
@@ -126,25 +133,23 @@ export default function App() {
             ?
           </button>
 
-          {/* Stage indicator */}
           <span className="text-xs text-white/40 font-mono">
             {stage.toUpperCase()}
           </span>
-
         </div>
       </header>
 
       {/* Step indicator */}
       <div className="flex gap-2 mt-6 mb-8">
-        {(["upload", "seed", "analysing", "results"] as AppStage[]).map((s, i) => (
+        {(["upload", "setup", "analysing", "results"]).map((s, i) => (
           <div key={s} className="flex items-center gap-2">
             <div
               className={`
                 w-7 h-7 rounded-full flex items-center justify-center
                 text-xs font-bold border-2 transition-all
-                ${stage === s
+                ${activeStepIndex === i
                   ? "border-orange-500 bg-orange-500 text-white"
-                  : ["upload", "seed", "analysing", "results"].indexOf(stage) > i
+                  : activeStepIndex > i
                   ? "border-orange-500 bg-orange-500/20 text-orange-400"
                   : "border-white/20 text-white/30"
                 }
@@ -160,8 +165,20 @@ export default function App() {
       {/* Steps */}
       <div className="w-full max-w-4xl px-4 pb-16">
 
+        {/* 🔥 3. Updated Upload Step with "Live Camera" branch */}
         <div style={{ display: stage === "upload" ? "block" : "none" }}>
           <UploadStep onFileAccepted={handleFileAccepted} />
+          
+          <div className="mt-8 pt-8 border-t border-white/10 flex flex-col items-center gap-4">
+            <p className="text-sm text-white/50">Or track your lift in real-time</p>
+            <button
+              onClick={() => setStage("live")}
+              className="bg-zinc-800 hover:bg-orange-600 border border-zinc-700 hover:border-orange-500 text-white font-bold py-4 px-8 rounded-xl transition-all flex items-center gap-3 w-full max-w-md justify-center shadow-lg"
+            >
+              <span className="text-xl">📷</span> 
+              <span>Start Live Camera</span>
+            </button>
+          </div>
         </div>
 
         {stage === "seed" && videoFile && (
@@ -169,6 +186,54 @@ export default function App() {
             file={videoFile}
             onSeedSet={handleSeedSet}
           />
+        )}
+
+        {/* 🔥 4. The new Live Tracking Step */}
+        {stage === "live" && (
+          <div className="w-full flex flex-col items-center animate-in fade-in zoom-in-95">
+            <div className="mb-6 w-full max-w-md bg-zinc-900 p-4 rounded-xl border border-zinc-800">
+              <label className="block text-sm font-semibold text-white/80 mb-2">
+                What are you lifting?
+              </label>
+              <select
+                value={liftType}
+                onChange={(e) => setLiftType(e.target.value as LiftType)}
+                className="w-full bg-black border border-zinc-700 rounded-lg p-3 text-white focus:border-orange-500 outline-none transition-colors"
+              >
+                <option value="squat">Squat</option>
+                <option value="bench">Bench Press</option>
+                <option value="deadlift">Deadlift</option>
+              </select>
+            </div>
+
+            <LiveTracker
+              onCancel={() => setStage("upload")}
+              onSetComplete={(frames, fps, width, height) => {
+            // Auto-estimate calibration for live tracking.
+            // Assuming a 45cm plate roughly takes up 1/5th of the video height at normal distance
+            const estimatedPxPerCm = (height / 5) / 45;
+            const finalPxPerCm = estimatedPxPerCm > 0 ? estimatedPxPerCm : 5;
+
+            setCalibration({
+              top: { x: 0, y: 0 },
+              bottom: { x: 0, y: finalPxPerCm * 45 },
+              diameterCm: 45,
+              pxPerCm: finalPxPerCm,
+              pxPerM: finalPxPerCm * 100,
+            });
+
+                setLiveResult({
+                  frames,
+                  fps,
+                  videoWidth: width,
+                  videoHeight: height,
+                  durationSeconds: frames.length > 0 ? frames[frames.length - 1].timeSeconds : 0
+                });
+
+                setStage("results");
+              }}
+            />
+          </div>
         )}
 
         {stage === "analysing" && (
@@ -180,10 +245,12 @@ export default function App() {
           />
         )}
 
-        {stage === "results" && result && videoFile && (
+        {/* 🔥 5. Results Step modified to handle live results gracefully */}
+        {stage === "results" && activeResult && calibration && (
           <ResultsStep
-            result={result}
-            file={videoFile}
+            result={activeResult}
+            // If it's a live set, pass a dummy file so the component doesn't crash on URL.createObjectURL
+            file={videoFile || new File([], "live-set.mp4", { type: "video/mp4" })}
             calibration={calibration}
             liftType={liftType}
             onReset={handleReset}
