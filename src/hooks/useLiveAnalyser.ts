@@ -12,11 +12,7 @@ export function useLiveAnalyser() {
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [isTracking, setIsTracking] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  
-  // Expose the live point so the UI can draw a dot over the video
   const [currentPoint, setCurrentPoint] = useState<Point | null>(null);
-  
-  // Expose the final recorded video so the Results step can play it
   const [recordedVideoBlob, setRecordedVideoBlob] = useState<Blob | null>(null);
   
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -24,11 +20,12 @@ export function useLiveAnalyser() {
   const framesRef = useRef<FrameResult[]>([]);
   const loopRef = useRef<number | null>(null);
   
-  // Refs for the background video recorder
+  // ✨ FIX 1: We use a Ref for the loop check so it never goes stale!
+  const isTrackingRef = useRef(false);
+
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
 
-  // 1. Initialize Worker
   useEffect(() => {
     const worker = new Worker(
       new URL("../workers/tracker.worker.ts", import.meta.url),
@@ -64,7 +61,6 @@ export function useLiveAnalyser() {
     []
   );
 
-  // 2. Start Camera (Back camera preferred)
   const startCamera = async () => {
     try {
       const mediaStream = await navigator.mediaDevices.getUserMedia({
@@ -84,12 +80,10 @@ export function useLiveAnalyser() {
     }
   }, [stream]);
 
-  // 3. Start Tracking (Triggered when user taps the plate)
   const startTracking = async (seedX: number, seedY: number) => {
     const video = videoRef.current;
     if (!video || !workerRef.current) return;
 
-    // --- START VIDEO RECORDING ---
     if (stream) {
       recordedChunksRef.current = [];
       const mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
@@ -100,19 +94,13 @@ export function useLiveAnalyser() {
         }
       };
 
-      mediaRecorder.onstop = () => {
-        const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
-        setRecordedVideoBlob(blob);
-      };
-
       mediaRecorderRef.current = mediaRecorder;
-      // Start recording, collecting a chunk every 100ms
       mediaRecorder.start(100); 
     }
-    // -----------------------------
 
     framesRef.current = [];
     setIsTracking(true);
+    isTrackingRef.current = true; // Set the ref to true!
 
     const videoWidth = video.videoWidth;
     const videoHeight = video.videoHeight;
@@ -127,20 +115,21 @@ export function useLiveAnalyser() {
 
     await workerSend({ type: "init", width: SCALED_WIDTH, height: scaledH, isMobile }, "ack");
 
-    // Grab first frame and seed
     ctx.drawImage(video, 0, 0, SCALED_WIDTH, scaledH);
     const firstImage = ctx.getImageData(0, 0, SCALED_WIDTH, scaledH);
     
-    let trackerPoint = { x: seedX * scale, y: seedY * scale };
+    // ✨ Y-OFFSET FIX: Seed slightly above the dark hole!
+    const yOffset = videoHeight * 0.05; 
+    let trackerPoint = { x: seedX * scale, y: (seedY - yOffset) * scale };
+    
     await workerSend({ type: "seed", x: trackerPoint.x, y: trackerPoint.y, imageData: firstImage }, "ack", [firstImage.data.buffer]);
 
     const startTime = performance.now();
     let frameIndex = 0;
 
-    // The tracking loop
     const trackLoop = async () => {
-      // Allow exiting cleanly
-      if (!isTracking && framesRef.current.length > 0) return; 
+      // ✨ Use the Ref so it actually stays alive!
+      if (!isTrackingRef.current && framesRef.current.length > 0) return; 
       
       ctx.drawImage(video, 0, 0, SCALED_WIDTH, scaledH);
       const frameData = ctx.getImageData(0, 0, SCALED_WIDTH, scaledH);
@@ -169,20 +158,31 @@ export function useLiveAnalyser() {
     trackLoop();
   };
 
-  // 4. End the set and return the frames
-  const stopTracking = (): FrameResult[] => {
-    setIsTracking(false);
-    
-    if (loopRef.current) cancelAnimationFrame(loopRef.current);
-    
-    // --- STOP VIDEO RECORDING ---
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      mediaRecorderRef.current.stop();
-    }
-    // ----------------------------
+  // ✨ FIX 2: Return a Promise so we can wait for the Blob to finish compiling!
+  const stopTracking = (): Promise<{ frames: FrameResult[], blob: Blob | null }> => {
+    return new Promise((resolve) => {
+      setIsTracking(false);
+      isTrackingRef.current = false;
+      
+      if (loopRef.current) cancelAnimationFrame(loopRef.current);
 
-    stopCamera();
-    return framesRef.current;
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        
+        // Wait for the onstop event to fire
+        mediaRecorderRef.current.onstop = () => {
+          const finalBlob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
+          setRecordedVideoBlob(finalBlob);
+          stopCamera();
+          resolve({ frames: framesRef.current, blob: finalBlob });
+        };
+        
+        mediaRecorderRef.current.stop(); // Triggers the onstop event above
+
+      } else {
+        stopCamera();
+        resolve({ frames: framesRef.current, blob: null });
+      }
+    });
   };
 
   return {

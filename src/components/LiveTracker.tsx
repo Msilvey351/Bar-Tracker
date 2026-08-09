@@ -16,7 +16,6 @@ export function LiveTracker({ onSetComplete, onCancel }: LiveTrackerProps) {
     videoRef,
     isTracking,
     currentPoint,
-    recordedVideoBlob,
     startCamera,
     stopCamera,
     startTracking,
@@ -27,7 +26,6 @@ export function LiveTracker({ onSetComplete, onCancel }: LiveTrackerProps) {
   const [modelLoading, setModelLoading] = useState(true);
   const scanLoopRef = useRef<number | null>(null);
 
-  // Start camera and load AI model
   useEffect(() => {
     startCamera();
     loadModel().then(() => setModelLoading(false));
@@ -43,7 +41,6 @@ export function LiveTracker({ onSetComplete, onCancel }: LiveTrackerProps) {
     }
   }, [stream, videoRef]);
 
-  // AI Scanning Loop (runs before tracking starts)
   useEffect(() => {
     if (isTracking || modelLoading || !videoRef.current) return;
 
@@ -53,11 +50,9 @@ export function LiveTracker({ onSetComplete, onCancel }: LiveTrackerProps) {
         return;
       }
       
-      // Run the frame through our custom YOLO model
       const box = await detectBarbell(videoRef.current);
       setAiBox(box);
 
-      // Loop it
       if (!isTracking) {
         scanLoopRef.current = requestAnimationFrame(scan);
       }
@@ -72,33 +67,29 @@ export function LiveTracker({ onSetComplete, onCancel }: LiveTrackerProps) {
 
   const handleVideoTap = () => {
     if (isTracking || !videoRef.current || !aiBox) return;
-
-    // We pass the exact center of the AI's box to the Optical Flow tracker
     startTracking(aiBox.x, aiBox.y);
   };
 
-  const handleStop = () => {
-    const frames = stopTracking();
+  // ✨ FIX: We await the promise to guarantee the Blob is ready!
+  const handleStop = async () => {
+    const { frames, blob } = await stopTracking();
     
-    // Give the MediaRecorder 150ms to compress the final chunks into the Blob
-    setTimeout(() => {
-      if (!videoRef.current || frames.length === 0 || !aiBox || !recordedVideoBlob) {
-        return onCancel();
-      }
+    if (!videoRef.current || frames.length === 0 || !aiBox || !blob || blob.size === 0) {
+      console.error("Missing data to complete set", { frames: frames.length, hasBlob: !!blob });
+      return onCancel();
+    }
 
-      const duration = frames[frames.length - 1].timeSeconds;
-      const estimatedFps = frames.length / duration;
+    const duration = frames[frames.length - 1].timeSeconds;
+    const estimatedFps = frames.length / duration;
 
-      // We pass aiBox.height back to App.tsx for perfect auto-calibration!
-      onSetComplete(
-        frames,
-        estimatedFps,
-        videoRef.current.videoWidth,
-        videoRef.current.videoHeight,
-        aiBox.height,
-        recordedVideoBlob // Send the completed video file!
-      );
-    }, 150);
+    onSetComplete(
+      frames,
+      estimatedFps,
+      videoRef.current.videoWidth,
+      videoRef.current.videoHeight,
+      aiBox.height,
+      blob 
+    );
   };
 
   return (
@@ -125,7 +116,6 @@ export function LiveTracker({ onSetComplete, onCancel }: LiveTrackerProps) {
           className="absolute inset-0 w-full h-full object-cover"
         />
 
-        {/* 1. Show the AI's Green Bounding Box before they tap */}
         {!isTracking && aiBox && videoRef.current && (
           <div
             className="absolute border-2 border-emerald-500 bg-emerald-500/10 transition-all duration-75 pointer-events-none"
@@ -138,7 +128,6 @@ export function LiveTracker({ onSetComplete, onCancel }: LiveTrackerProps) {
           />
         )}
 
-        {/* 2. Show the Red Optical Flow crosshair while they are lifting */}
         {isTracking && currentPoint && videoRef.current && (
           <div
             className="absolute w-8 h-8 border-2 border-red-500 rounded-full flex items-center justify-center pointer-events-none transform -translate-x-1/2 -translate-y-1/2 shadow-[0_0_10px_rgba(239,68,68,0.5)]"
