@@ -3,7 +3,37 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FrameResult, Point } from "@/types";
 
-const SCALED_WIDTH = 160;
+const SCALED_WIDTH = 640;
+const SMOOTHING_WINDOW = 3;
+
+
+// ✨ Add these two smoothing functions
+function medianOf(values: number[]): number {
+  if (!values.length) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 1
+    ? sorted[mid]
+    : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+function smoothPositions(frames: FrameResult[]): FrameResult[] {
+  if (frames.length < SMOOTHING_WINDOW) return frames;
+  const half = Math.floor(SMOOTHING_WINDOW / 2);
+  return frames.map((frame, i) => {
+    const lo = Math.max(0, i - half);
+    const hi = Math.min(frames.length - 1, i + half);
+    const slice = frames.slice(lo, hi + 1);
+    return {
+      ...frame,
+      position: {
+        x: medianOf(slice.map((f) => f.position.x)),
+        y: medianOf(slice.map((f) => f.position.y)),
+      },
+    };
+  });
+}
+
 const isMobile =
   typeof navigator !== "undefined" &&
   /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
@@ -159,6 +189,7 @@ export function useLiveAnalyser() {
   };
 
   // ✨ FIX 2: Return a Promise so we can wait for the Blob to finish compiling!
+  // ✨ FIX: Apply the smoothing function to the raw frames!
   const stopTracking = (): Promise<{ frames: FrameResult[], blob: Blob | null }> => {
     return new Promise((resolve) => {
       setIsTracking(false);
@@ -167,20 +198,21 @@ export function useLiveAnalyser() {
       if (loopRef.current) cancelAnimationFrame(loopRef.current);
 
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-        
-        // Wait for the onstop event to fire
         mediaRecorderRef.current.onstop = () => {
           const finalBlob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
           setRecordedVideoBlob(finalBlob);
           stopCamera();
-          resolve({ frames: framesRef.current, blob: finalBlob });
+          
+          // SMOOTH HERE
+          const smoothedFrames = smoothPositions(framesRef.current);
+          resolve({ frames: smoothedFrames, blob: finalBlob });
         };
-        
-        mediaRecorderRef.current.stop(); // Triggers the onstop event above
-
+        mediaRecorderRef.current.stop(); 
       } else {
         stopCamera();
-        resolve({ frames: framesRef.current, blob: null });
+        // AND SMOOTH HERE
+        const smoothedFrames = smoothPositions(framesRef.current);
+        resolve({ frames: smoothedFrames, blob: null });
       }
     });
   };

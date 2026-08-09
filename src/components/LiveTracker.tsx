@@ -67,7 +67,8 @@ export function LiveTracker({ onSetComplete, onCancel }: LiveTrackerProps) {
 
   const handleVideoTap = () => {
     if (isTracking || !videoRef.current || !aiBox) return;
-    startTracking(aiBox.x, aiBox.y);
+    const seedYOffset = aiBox.height*0.15;
+    startTracking(aiBox.x, aiBox.y - seedYOffset);
   };
 
   // ✨ FIX: We await the promise to guarantee the Blob is ready!
