@@ -96,7 +96,7 @@ export default function SeedStep({ file, onSeedSet }: SeedStepProps) {
     // ✨ THE Y-OFFSET FIX
     // aiBox.height is the total diameter of the plate.
     // If we move UP by 25% of the height, we land perfectly in the middle of the top half!
-    const offsetPixels = aiBox.height * 0.25;
+    const offsetPixels = aiBox.height * 0.15;
 
     const seedPoint: Point = { 
       x: aiBox.x, 
