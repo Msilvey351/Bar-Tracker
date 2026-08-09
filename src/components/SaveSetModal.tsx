@@ -95,13 +95,13 @@ export default function SaveSetModal({
 
     const totalReps = repStats.length;
     const repsBeforeLast = totalReps - repNumber;
-    return Math.max(1, finalRepRpe - repsBeforeLast);
+    return finalRepRpe - repsBeforeLast;
   };
 
   // 🔥 NEW: Convert RPE to RIR for easier math later
   const getRepRir = (repRpe: number | null) => {
     if (repRpe == null) return null;
-    return Math.max(0, 10 - repRpe); 
+    return 10 - repRpe; 
   };
 
   const handleSave = async () => {
@@ -221,7 +221,7 @@ export default function SaveSetModal({
   const previewFirstRpe =
     previewFinalRpe == null
       ? null
-      : Math.max(1, previewFinalRpe - (repStats.length - 1));
+      : previewFinalRpe - (repStats.length - 1);
 
   return (
     // ... [No changes needed in the UI return block!] ...
