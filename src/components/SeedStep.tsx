@@ -169,7 +169,7 @@ export default function SeedStep({ file, onSeedSet }: SeedStepProps) {
           className="max-w-full max-h-full object-contain"
           playsInline
           muted
-        />
+        /> 
 
         {aiBox && videoRef.current && (
           <div
