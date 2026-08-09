@@ -16,7 +16,31 @@ export function useVelocityProfile(exercise: string) {
       setLoading(true);
       const supabase = createClient();
 
-      // Fetch all sets for this exercise that have a weight and are calibrated (m/s)
+      // ✨ Calculate the date exactly 3 months ago
+      const threeMonthsAgo = new Date();
+      threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
+
+      // We need to fetch workouts first to filter by date
+      const { data: workouts, error: workoutError } = await supabase
+        .from("workouts")
+        .select("id")
+        .gte("date", threeMonthsAgo.toISOString());
+
+      if (workoutError || !workouts) {
+        console.error("Error fetching workouts:", workoutError);
+        setLoading(false);
+        return;
+      }
+
+      const workoutIds = workouts.map(w => w.id);
+
+      if (workoutIds.length === 0) {
+        setProfile([]);
+        setLoading(false);
+        return;
+      }
+
+      // Now fetch sets that belong to those recent workouts
       const { data, error } = await supabase
         .from("sets")
         .select(`
@@ -27,6 +51,7 @@ export function useVelocityProfile(exercise: string) {
             avg_concentric_velocity
           )
         `)
+        .in("workout_id", workoutIds)
         .eq("exercise", exercise)
         .eq("velocity_unit", "m/s");
 
@@ -36,22 +61,18 @@ export function useVelocityProfile(exercise: string) {
         return;
       }
 
-      // Group reps by RIR
       const rirBuckets: Record<number, number[]> = {};
 
       data.forEach((set) => {
         set.reps.forEach((rep) => {
           if (rep.rir != null && rep.avg_concentric_velocity != null) {
-            // Round RIR to the nearest 0.5 to group them cleanly
             const roundedRir = Math.round(rep.rir * 2) / 2;
-            
             if (!rirBuckets[roundedRir]) rirBuckets[roundedRir] = [];
             rirBuckets[roundedRir].push(rep.avg_concentric_velocity);
           }
         });
       });
 
-      // Calculate averages and sort from 0 RIR to highest RIR
       const processedProfile: RirProfileData[] = Object.keys(rirBuckets)
         .map((key) => {
           const rir = parseFloat(key);
@@ -64,7 +85,7 @@ export function useVelocityProfile(exercise: string) {
             sampleSize: speeds.length,
           };
         })
-        .sort((a, b) => a.rir - b.rir); // Sort 0 RIR (Max) at the top
+        .sort((a, b) => a.rir - b.rir);
 
       setProfile(processedProfile);
       setLoading(false);

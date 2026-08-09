@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useVelocityProfile } from "@/hooks/useVelocityProfile";
-import type { LiftType } from "@/types";
+import { ProfileGraph } from "./ProfileGraph";
 
 export default function VelocityProfile({ onClose }: { onClose: () => void }) {
   const [exercise, setExercise] = useState<string>("bench_press");
@@ -58,6 +58,11 @@ export default function VelocityProfile({ onClose }: { onClose: () => void }) {
             </div>
           )}
         </div>
+
+        {/* ✨ The graph is now correctly placed here! */}
+        {!loading && profile.length >= 2 && (
+          <ProfileGraph profile={profile} />
+        )}
 
         <p className="text-xs text-white/40 text-center mt-6">
           This curve learns your personal minimum velocity thresholds over time to calculate your daily readiness.
