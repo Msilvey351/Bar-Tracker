@@ -13,6 +13,7 @@ import { useVideoAnalyser } from "@/hooks/useVideoAnalyser";
 import { useAuth }          from "@/context/AuthContext";
 import { LiveTracker }      from "./LiveTracker";
 import VelocityProfile from "./VelocityProfile";
+import VbtCoach from "./VbtCoach";
 
 export default function App() {
   const [stage,       setStage]       = useState<AppStage | "live">("upload");
@@ -22,7 +23,7 @@ export default function App() {
   const [showHelp,    setShowHelp]    = useState(false);
   const [showAuth,    setShowAuth]    = useState(false);
   const [showHistory, setShowHistory] = useState(false);
-
+  const [showCoach, setShowCoach] = useState(false);
   const [liveResult, setLiveResult] = useState<AnalysisResult | null>(null);
   const [showProfile, setShowProfile] = useState(false);
   const { user, signOut } = useAuth();
@@ -78,7 +79,8 @@ export default function App() {
       {showAuth    && <AuthModal       onClose={() => setShowAuth(false)} />}
       {showHistory && <HistoryPage     onClose={() => setShowHistory(false)} />}
       {showProfile && <VelocityProfile onClose={() => setShowProfile(false)} />}
-
+      {showCoach && <VbtCoach onClose={() => setShowCoach(false)} />}
+        
       <header className="w-full py-4 px-6 border-b border-white/10 flex items-center gap-3">
         <span className="text-2xl">🏋️</span>
         <h1 className="text-xl font-bold tracking-tight text-orange-400">
@@ -114,6 +116,12 @@ export default function App() {
                 className="text-xs text-white/40 hover:text-white/70 transition-colors border border-white/10 hover:border-white/20 rounded-lg px-2 py-1"
               >
                 Sign out
+              </button>
+                            <button
+                onClick={() => setShowCoach(true)}
+                className="text-xs text-white/70 hover:text-white transition-colors border border-white/10 hover:border-white/20 rounded-lg px-2 py-1"
+              >
+                🤖 Coach
               </button>
             </div>
           ) : (
