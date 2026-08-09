@@ -16,10 +16,17 @@ export function useLiveAnalyser() {
   // Expose the live point so the UI can draw a dot over the video
   const [currentPoint, setCurrentPoint] = useState<Point | null>(null);
   
+  // Expose the final recorded video so the Results step can play it
+  const [recordedVideoBlob, setRecordedVideoBlob] = useState<Blob | null>(null);
+  
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const workerRef = useRef<Worker | null>(null);
   const framesRef = useRef<FrameResult[]>([]);
   const loopRef = useRef<number | null>(null);
+  
+  // Refs for the background video recorder
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordedChunksRef = useRef<Blob[]>([]);
 
   // 1. Initialize Worker
   useEffect(() => {
@@ -48,9 +55,9 @@ export function useLiveAnalyser() {
         worker.addEventListener("message", handler);
 
         if (transfer?.length) {
-        worker.postMessage(message, transfer);
+          worker.postMessage(message, transfer);
         } else {
-            worker.postMessage(message);
+          worker.postMessage(message);
         }
       });
     },
@@ -82,6 +89,28 @@ export function useLiveAnalyser() {
     const video = videoRef.current;
     if (!video || !workerRef.current) return;
 
+    // --- START VIDEO RECORDING ---
+    if (stream) {
+      recordedChunksRef.current = [];
+      const mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
+      
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          recordedChunksRef.current.push(event.data);
+        }
+      };
+
+      mediaRecorder.onstop = () => {
+        const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
+        setRecordedVideoBlob(blob);
+      };
+
+      mediaRecorderRef.current = mediaRecorder;
+      // Start recording, collecting a chunk every 100ms
+      mediaRecorder.start(100); 
+    }
+    // -----------------------------
+
     framesRef.current = [];
     setIsTracking(true);
 
@@ -110,7 +139,8 @@ export function useLiveAnalyser() {
 
     // The tracking loop
     const trackLoop = async () => {
-      if (!isTracking && framesRef.current.length > 0) return; // Exit if stopped
+      // Allow exiting cleanly
+      if (!isTracking && framesRef.current.length > 0) return; 
       
       ctx.drawImage(video, 0, 0, SCALED_WIDTH, scaledH);
       const frameData = ctx.getImageData(0, 0, SCALED_WIDTH, scaledH);
@@ -142,7 +172,15 @@ export function useLiveAnalyser() {
   // 4. End the set and return the frames
   const stopTracking = (): FrameResult[] => {
     setIsTracking(false);
+    
     if (loopRef.current) cancelAnimationFrame(loopRef.current);
+    
+    // --- STOP VIDEO RECORDING ---
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+    }
+    // ----------------------------
+
     stopCamera();
     return framesRef.current;
   };
@@ -153,6 +191,7 @@ export function useLiveAnalyser() {
     isTracking,
     error,
     currentPoint,
+    recordedVideoBlob,
     startCamera,
     stopCamera,
     startTracking,

@@ -6,7 +6,7 @@ import { loadModel, detectBarbell } from "@/lib/yolo";
 import type { FrameResult } from "@/types";
 
 interface LiveTrackerProps {
-  onSetComplete: (frames: FrameResult[], fps: number, width: number, height: number, plateHeightPx: number) => void;
+  onSetComplete: (frames: FrameResult[], fps: number, width: number, height: number, plateHeightPx: number, videoBlob: Blob) => void;
   onCancel: () => void;
 }
 
@@ -16,6 +16,7 @@ export function LiveTracker({ onSetComplete, onCancel }: LiveTrackerProps) {
     videoRef,
     isTracking,
     currentPoint,
+    recordedVideoBlob,
     startCamera,
     stopCamera,
     startTracking,
@@ -78,19 +79,26 @@ export function LiveTracker({ onSetComplete, onCancel }: LiveTrackerProps) {
 
   const handleStop = () => {
     const frames = stopTracking();
-    if (!videoRef.current || frames.length === 0 || !aiBox) return onCancel();
+    
+    // Give the MediaRecorder 150ms to compress the final chunks into the Blob
+    setTimeout(() => {
+      if (!videoRef.current || frames.length === 0 || !aiBox || !recordedVideoBlob) {
+        return onCancel();
+      }
 
-    const duration = frames[frames.length - 1].timeSeconds;
-    const estimatedFps = frames.length / duration;
+      const duration = frames[frames.length - 1].timeSeconds;
+      const estimatedFps = frames.length / duration;
 
-    // We pass aiBox.height back to App.tsx for perfect auto-calibration!
-    onSetComplete(
-      frames,
-      estimatedFps,
-      videoRef.current.videoWidth,
-      videoRef.current.videoHeight,
-      aiBox.height
-    );
+      // We pass aiBox.height back to App.tsx for perfect auto-calibration!
+      onSetComplete(
+        frames,
+        estimatedFps,
+        videoRef.current.videoWidth,
+        videoRef.current.videoHeight,
+        aiBox.height,
+        recordedVideoBlob // Send the completed video file!
+      );
+    }, 150);
   };
 
   return (

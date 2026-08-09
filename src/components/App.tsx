@@ -188,10 +188,9 @@ export default function App() {
 
             <LiveTracker
               onCancel={() => setStage("upload")}
-              onSetComplete={(frames, fps, width, height, plateHeightPx) => {
+              onSetComplete={(frames, fps, width, height, plateHeightPx, videoBlob) => {
                 
                 // 🔥 Auto-Calibration Math!
-                // The AI tells us exactly how tall the 45cm plate is in pixels.
                 const finalPxPerCm = plateHeightPx / 45; 
 
                 setCalibration({
@@ -209,6 +208,10 @@ export default function App() {
                   videoHeight: height,
                   durationSeconds: frames.length > 0 ? frames[frames.length - 1].timeSeconds : 0
                 });
+
+                // Wrap the recorded Blob in a File so ResultsStep can play it seamlessly
+                const liveVideoFile = new File([videoBlob], "live-set.webm", { type: "video/webm" });
+                setVideoFile(liveVideoFile);
 
                 setStage("results");
               }}
