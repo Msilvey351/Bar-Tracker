@@ -82,17 +82,27 @@ export default function SeedStep({ file, onSeedSet }: SeedStepProps) {
   const startAnalysis = () => {
     if (!aiBox) return;
 
-    const finalPxPerCm = aiBox.height / 45;
+    // A standard Olympic plate is 45cm
+    const finalPxPerCm = aiBox.width / 45.0;
 
     const autoCalibration: CalibrationPoints = {
       top: { x: 0, y: 0 },
-      bottom: { x: 0, y: aiBox.height },
+      bottom: { x: 0, y: aiBox.height }, // The height of the bounding box is 45cm
       diameterCm: 45,
       pxPerCm: finalPxPerCm,
       pxPerM: finalPxPerCm * 100,
     };
 
-    const seedPoint: Point = { x: aiBox.x, y: aiBox.y };
+    // ✨ THE Y-OFFSET FIX
+    // aiBox.height is the total diameter of the plate.
+    // If we move UP by 25% of the height, we land perfectly in the middle of the top half!
+    const offsetPixels = aiBox.height * 0.25;
+
+    const seedPoint: Point = { 
+      x: aiBox.x, 
+      y: aiBox.y - offsetPixels // Subtracting moves it UP on the screen
+    };
+
     onSeedSet(seedPoint, autoCalibration, liftType);
   };
 
