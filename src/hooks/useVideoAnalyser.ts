@@ -17,7 +17,7 @@ interface UseVideoAnalyserReturn {
 
 // 🔥 OPTIMIZATION 1: Cut resolution in half. 
 // 160px is plenty for finding a massive weight plate, and is 4x faster than 320px.
-const SCALED_WIDTH = 640; 
+const SCALED_WIDTH = 360; 
 
 const SMOOTHING_WINDOW = 3;
 
