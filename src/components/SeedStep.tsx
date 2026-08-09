@@ -14,11 +14,16 @@ export default function SeedStep({ file, onSeedSet }: SeedStepProps) {
   
   const [liftType, setLiftType] = useState<LiftType>("squat");
   const [modelLoading, setModelLoading] = useState(true);
+  const [videoReady, setVideoReady] = useState(false);
   const [aiBox, setAiBox] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
   const [autoStartCountdown, setAutoStartCountdown] = useState<number | null>(null);
 
   // 1. Load the video file
   useEffect(() => {
+    setVideoReady(false);
+    setAiBox(null); 
+    setAutoStartCountdown(null);
+
     if (!file || !videoRef.current) return;
     const url = URL.createObjectURL(file);
     videoRef.current.src = url;
@@ -35,12 +40,9 @@ export default function SeedStep({ file, onSeedSet }: SeedStepProps) {
       .catch((err) => console.error("❌ Failed to load AI:", err));
   }, []);
 
-  // 3. ✨ NEW: Scan the frame only when BOTH the model and video are ready!
+  // 3. Scan the frame ONLY when both model and video are explicitly ready
   useEffect(() => {
-    if (modelLoading || !videoRef.current) return;
-
-    setAiBox(null);
-    setAutoStartCountdown(null);
+    if (modelLoading || !videoReady || !videoRef.current) return;
 
     const scanFirstFrame = async () => {
       try {
@@ -59,14 +61,8 @@ export default function SeedStep({ file, onSeedSet }: SeedStepProps) {
       }
     };
 
-    // If video is already loaded, scan immediately. Otherwise, wait for it.
-    if (videoRef.current.readyState >= 2) {
-      scanFirstFrame();
-    } else {
-      videoRef.current.addEventListener('loadeddata', scanFirstFrame);
-      return () => videoRef.current?.removeEventListener('loadeddata', scanFirstFrame);
-    }
-  }, [modelLoading, file]); // This runs the moment modelLoading becomes false
+    scanFirstFrame();
+  }, [modelLoading, videoReady, file]); // React runs this perfectly now
 
   // 4. Handle the Countdown Timer
   useEffect(() => {
@@ -168,6 +164,7 @@ export default function SeedStep({ file, onSeedSet }: SeedStepProps) {
       <div className="relative w-full aspect-[9/16] max-h-[60vh] bg-black rounded-lg overflow-hidden border border-zinc-800 shadow-xl flex items-center justify-center">
         <video
           ref={videoRef}
+          onLoadedData={() => setVideoReady(true)} {/* 🔥 Let React tell us it's ready */}
           onClick={handleManualClick}
           className="max-w-full max-h-full object-contain"
           playsInline

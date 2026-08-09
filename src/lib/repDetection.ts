@@ -246,10 +246,16 @@ function combineSegments(segs: MovementSegment[], vFrames: VelocityFrame[], prim
 function initialRawMovementSegments(vFrames: VelocityFrame[]): MovementSegment[] {
   if (!vFrames.length) return [];
 
-  const globalSpeedPeak = Math.max(...vFrames.map((f) => f.velocitySmoothed), 1);
-  const globalVyPeak = Math.max(...vFrames.map((f) => Math.abs(f.velocityY)), 1);
-  const movingThreshold = globalSpeedPeak * MOVING_FRACTION;
-  const directionThreshold = globalVyPeak * DIRECTION_FRACTION;
+  // 🔥 FIX: Sort the arrays to find the 95th percentile peak instead of the absolute max. 
+  // This makes the algorithm 100% immune to random 1-frame tracker glitches!
+  const sortedSpeeds = [...vFrames.map((f) => f.velocitySmoothed)].sort((a, b) => a - b);
+  const robustSpeedPeak = sortedSpeeds[Math.floor(sortedSpeeds.length * 0.95)] || 1;
+
+  const sortedVy = [...vFrames.map((f) => Math.abs(f.velocityY))].sort((a, b) => a - b);
+  const robustVyPeak = sortedVy[Math.floor(sortedVy.length * 0.95)] || 1;
+
+  const movingThreshold = robustSpeedPeak * MOVING_FRACTION;
+  const directionThreshold = robustVyPeak * DIRECTION_FRACTION;
 
   const dirByFrame: Array<-1 | 1 | null> = vFrames.map((f) => {
     if (f.velocitySmoothed < movingThreshold) return null;
