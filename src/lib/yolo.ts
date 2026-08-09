@@ -66,20 +66,19 @@ export async function detectBarbell(video: HTMLVideoElement) {
   let bestScore = 0;
   let bestBox = null;
 
+  // ✨ THE FIX: We only want to check the "Barbell" (plate) class.
+  // Because it is the second class, it is always located at the very end of the array.
+  // If your model has 2 classes, this checks index 5. If it has 1 class, it checks index 4.
+  const plateClassRow = numRows - 1; 
+
   for (let col = 0; col < numColumns; col++) {
     
-    // Check all available classes (starts at index 4)
-    let maxConfForThisCell = 0;
-    for (let row = 4; row < numRows; row++) {
-      const conf = outData[row * numColumns + col];
-      if (conf > maxConfForThisCell) {
-        maxConfForThisCell = conf;
-      }
-    }
+    // Only look at the confidence score for the plate!
+    const conf = outData[plateClassRow * numColumns + col];
 
-    // If this cell has a better score than our current best, save it!
-    if (maxConfForThisCell > bestScore) {
-      bestScore = maxConfForThisCell;
+    // If this cell has a better plate score than our current best, save it!
+    if (conf > bestScore) {
+      bestScore = conf;
       bestBox = {
         x: outData[0 * numColumns + col],
         y: outData[1 * numColumns + col],
