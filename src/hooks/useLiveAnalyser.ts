@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FrameResult, Point } from "@/types";
 
-const SCALED_WIDTH = 640;
+const SCALED_WIDTH = 360;
 const SMOOTHING_WINDOW = 3;
 
 

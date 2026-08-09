@@ -94,19 +94,14 @@ export default function SaveSetModal({
     if (finalRepRpe == null || !Number.isFinite(finalRepRpe)) return null;
 
     const totalReps = repStats.length;
-
-    /**
-     * User rates final rep.
-     *
-     * Example:
-     * 7 reps, final RPE 9:
-     * rep 7 = 9
-     * rep 6 = 8
-     * rep 5 = 7
-     * ...
-     */
     const repsBeforeLast = totalReps - repNumber;
     return Math.max(1, finalRepRpe - repsBeforeLast);
+  };
+
+  // 🔥 NEW: Convert RPE to RIR for easier math later
+  const getRepRir = (repRpe: number | null) => {
+    if (repRpe == null) return null;
+    return Math.max(0, 10 - repRpe); 
   };
 
   const handleSave = async () => {
@@ -174,17 +169,8 @@ export default function SaveSetModal({
         workout_id: workoutId,
         exercise,
         weight_kg: weightKg ? parseFloat(weightKg) : null,
-
-        /**
-         * This remains the user-rated RPE for the final rep / whole set.
-         */
         rpe: finalRepRpe,
-
-        /**
-         * Helps history know whether saved velocities are m/s or px/s.
-         */
         velocity_unit: velocityUnit,
-
         notes: notes || null,
       })
       .select("id")
@@ -196,34 +182,28 @@ export default function SaveSetModal({
       return;
     }
 
-    /**
-     * Important:
-     * Save the same values the immediate RepTable shows.
-     *
-     * RepTable displays:
-     * calibrated: px/s / pxPerM = m/s
-     * uncalibrated: raw px/s
-     *
-     * So we store that same displayed unit here.
-     */
-    const repsToInsert = repStats.map((rep) => ({
-      set_id: newSet.id,
-      rep_number: rep.repNumber,
+    const repsToInsert = repStats.map((rep) => {
+      const repRpe = getRepRpe(rep.repNumber);
+      const repRir = getRepRir(repRpe);
 
-      avg_concentric_velocity: convertVelocity(rep.avgConcentricVelocity),
-      avg_eccentric_velocity: convertVelocity(rep.avgEccentricVelocity),
-      peak_concentric_velocity: convertVelocity(rep.peakConcentricVelocity),
+      return {
+        set_id: newSet.id,
+        rep_number: rep.repNumber,
 
-      concentric_duration: rep.concentricDuration,
-      eccentric_duration: rep.eccentricDuration,
-      percent_speed_drop: rep.percentSpeedDrop,
-      pause_duration: rep.pauseDuration ?? 0,
+        avg_concentric_velocity: convertVelocity(rep.avgConcentricVelocity),
+        avg_eccentric_velocity: convertVelocity(rep.avgEccentricVelocity),
+        peak_concentric_velocity: convertVelocity(rep.peakConcentricVelocity),
 
-      /**
-       * Per-rep RPE derived backwards from the final rep RPE.
-       */
-      rpe: getRepRpe(rep.repNumber),
-    }));
+        concentric_duration: rep.concentricDuration,
+        eccentric_duration: rep.eccentricDuration,
+        percent_speed_drop: rep.percentSpeedDrop,
+        pause_duration: rep.pauseDuration ?? 0,
+
+        rpe: repRpe,
+        // 🔥 NEW: Store RIR alongside RPE
+        rir: repRir,
+      };
+    });
 
     const { error: rErr } = await supabase.from("reps").insert(repsToInsert);
 
@@ -244,6 +224,7 @@ export default function SaveSetModal({
       : Math.max(1, previewFinalRpe - (repStats.length - 1));
 
   return (
+    // ... [No changes needed in the UI return block!] ...
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm"
       onClick={onClose}
