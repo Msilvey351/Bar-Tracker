@@ -12,6 +12,7 @@ import HistoryPage     from "./HistoryPage";
 import { useVideoAnalyser } from "@/hooks/useVideoAnalyser";
 import { useAuth }          from "@/context/AuthContext";
 import { LiveTracker }      from "./LiveTracker";
+import VelocityProfile from "./VelocityProfile";
 
 export default function App() {
   const [stage,       setStage]       = useState<AppStage | "live">("upload");
@@ -23,7 +24,7 @@ export default function App() {
   const [showHistory, setShowHistory] = useState(false);
 
   const [liveResult, setLiveResult] = useState<AnalysisResult | null>(null);
-
+  const [showProfile, setShowProfile] = useState(false);
   const { user, signOut } = useAuth();
 
   const {
@@ -76,6 +77,7 @@ export default function App() {
       {showHelp    && <HowItWorksModal onClose={() => setShowHelp(false)} />}
       {showAuth    && <AuthModal       onClose={() => setShowAuth(false)} />}
       {showHistory && <HistoryPage     onClose={() => setShowHistory(false)} />}
+      {showProfile && <VelocityProfile onClose={() => setShowProfile(false)} />}
 
       <header className="w-full py-4 px-6 border-b border-white/10 flex items-center gap-3">
         <span className="text-2xl">🏋️</span>
@@ -100,6 +102,12 @@ export default function App() {
                 className="text-xs text-white/70 hover:text-white transition-colors border border-white/10 hover:border-white/20 rounded-lg px-2 py-1"
               >
                 📋 History
+              </button>
+                            <button
+                onClick={() => setShowProfile(true)}
+                className="text-xs text-white/70 hover:text-white transition-colors border border-white/10 hover:border-white/20 rounded-lg px-2 py-1"
+              >
+                📈 Profile
               </button>
               <button
                 onClick={signOut}
