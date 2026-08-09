@@ -385,7 +385,7 @@ export function useVideoAnalyser(): UseVideoAnalyserReturn {
           // 🔥 OPTIMIZATION 2: Play the video faster!
           // Because memory transfer is 4x lighter now, the CPU can handle processing 
           // the frames in fast-forward. A 30s video should finish in ~15s.
-          video.playbackRate = 2.0;
+          video.playbackRate = 1.0;
 
           video.requestVideoFrameCallback(processNextFrame);
           video.play().catch(reject);
