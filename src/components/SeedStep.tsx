@@ -164,7 +164,7 @@ export default function SeedStep({ file, onSeedSet }: SeedStepProps) {
       <div className="relative w-full aspect-[9/16] max-h-[60vh] bg-black rounded-lg overflow-hidden border border-zinc-800 shadow-xl flex items-center justify-center">
         <video
           ref={videoRef}
-          onLoadedData={() => setVideoReady(true)} {/* 🔥 Let React tell us it's ready */}
+          onLoadedData={() => setVideoReady(true)} /* 🔥 Let React tell us it's ready */
           onClick={handleManualClick}
           className="max-w-full max-h-full object-contain"
           playsInline
