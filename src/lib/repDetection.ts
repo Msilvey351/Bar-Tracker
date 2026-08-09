@@ -364,7 +364,7 @@ function buildRepCandidatesByROM(
 
     // 2. Concentric Phase: Accumulate everything until bar returns to near baseline height.
     // 80% return required to count the rep as finished.
-    const targetY = baselineY + signOf(bottomY - baselineY) * (totalRom * 0.20);
+    const targetY = baselineY + signOf(bottomY - baselineY) * (totalRom * 0.10);
     const concentricDir = expectedFirstDir === 1 ? -1 : 1;
 
     const concStartIdx = j;
@@ -439,7 +439,7 @@ function adaptiveFilterCandidates(
   liftType: LiftType = "squat"
 ): RepCandidate[] {
   const basic = basicFilterCandidates(candidates, calibration, liftType);
-  if (!basic.length) return [];
+  if (basic.length <= 3) return [];
 
   const medRange = median(basic.map((c) => c.rangePx));
   const medPeak = median(basic.map((c) => c.peakSpeed));

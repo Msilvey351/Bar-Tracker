@@ -39,6 +39,9 @@ export default function SeedStep({ file, onSeedSet }: SeedStepProps) {
   useEffect(() => {
     if (modelLoading || !videoRef.current) return;
 
+    setAiBox(null);
+    setAutoStartCountdown(null);
+
     const scanFirstFrame = async () => {
       try {
         console.log("📸 Scanning first frame...");
@@ -63,7 +66,7 @@ export default function SeedStep({ file, onSeedSet }: SeedStepProps) {
       videoRef.current.addEventListener('loadeddata', scanFirstFrame);
       return () => videoRef.current?.removeEventListener('loadeddata', scanFirstFrame);
     }
-  }, [modelLoading]); // This runs the moment modelLoading becomes false
+  }, [modelLoading, file]); // This runs the moment modelLoading becomes false
 
   // 4. Handle the Countdown Timer
   useEffect(() => {
