@@ -34,8 +34,6 @@ export default function ResultsStep({
   const [savedDone, setSavedDone] = useState(false);
 
   const { user } = useAuth();
-  
-  // Track if we've already sent telemetry for this specific video so we don't spam the DB
   const telemetrySent = useRef(false);
 
   const { vFrames, repStats } = useMemo(
@@ -43,7 +41,6 @@ export default function ResultsStep({
     [result, calibration, liftType]
   );
 
-  // 🔥 STEP 2: Fire off the telemetry in the background once analysis is ready
   useEffect(() => {
     if (!telemetrySent.current && vFrames.length > 0) {
       saveLiftTelemetry(liftType, vFrames, repStats.length);
@@ -57,8 +54,35 @@ export default function ResultsStep({
     { id: "playback", label: "Video Playback", icon: "🎬" },
   ];
 
+  // 📝 CSV EXPORT FUNCTION
+  const downloadCSV = () => {
+    if (repStats.length === 0) return;
+
+    // 1. Create the CSV headers
+    let csvContent = "Rep,Avg Concentric (m/s),Peak Concentric (m/s),Avg Eccentric (m/s),Concentric Time (s),Eccentric Time (s),Speed Drop (%)\n";
+
+    // 2. Loop through the stats and add rows
+    repStats.forEach((rep) => {
+      const drop = rep.percentSpeedDrop > 0 ? rep.percentSpeedDrop.toFixed(1) : "0.0";
+      csvContent += `${rep.repNumber},${rep.avgConcentricVelocity.toFixed(2)},${rep.peakConcentricVelocity.toFixed(2)},${Math.abs(rep.avgEccentricVelocity).toFixed(2)},${rep.concentricDuration.toFixed(2)},${rep.eccentricDuration.toFixed(2)},${drop}%\n`;
+    });
+
+    // 3. Create a Blob (a browser file object)
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+
+    // 4. Create a hidden link and click it to trigger the download
+    const link = document.createElement("a");
+    link.href = url;
+    const dateStr = new Date().toISOString().split("T")[0];
+    link.setAttribute("download", `${liftType}_vbt_stats_${dateStr}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   return (
-    <div className="flex flex-col items-center gap-6">
+    <div className="flex flex-col items-center gap-6 pb-12">
       {/* Header */}
       <div className="text-center">
         <h2 className="text-2xl font-bold">Analysis Complete 🎉</h2>
@@ -101,7 +125,19 @@ export default function ResultsStep({
       {/* Content */}
       <div className="w-full max-w-4xl">
         {view === "table" && (
-          <RepTable stats={repStats} calibration={calibration} />
+          <div className="flex flex-col gap-4">
+            <RepTable stats={repStats} calibration={calibration} />
+            
+            {/* CSV EXPORT BUTTON */}
+            <div className="flex justify-end">
+              <button
+                onClick={downloadCSV}
+                className="flex items-center gap-2 px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-white text-sm font-semibold rounded-lg border border-zinc-700 transition-colors"
+              >
+                <span>⬇️</span> Download CSV
+              </button>
+            </div>
+          </div>
         )}
 
         {view === "chart" && (
@@ -118,7 +154,7 @@ export default function ResultsStep({
       </div>
 
       {/* Save Set */}
-      <div className="flex flex-col items-center gap-2 w-full max-w-md">
+      <div className="flex flex-col items-center gap-2 w-full max-w-md mt-4">
         {savedDone ? (
           <div className="w-full py-3 bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 font-semibold rounded-xl text-center text-sm">
             ✅ Set saved to your history!
