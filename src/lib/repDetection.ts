@@ -246,7 +246,7 @@ function combineSegments(segs: MovementSegment[], vFrames: VelocityFrame[], prim
 function initialRawMovementSegments(vFrames: VelocityFrame[]): MovementSegment[] {
   if (!vFrames.length) return [];
 
-  // 🔥 FIX: Sort the arrays to find the 95th percentile peak instead of the absolute max. 
+  // Sort the arrays to find the 95th percentile peak instead of the absolute max. 
   // This makes the algorithm 100% immune to random 1-frame tracker glitches!
   const sortedSpeeds = [...vFrames.map((f) => f.velocitySmoothed)].sort((a, b) => a - b);
   const robustSpeedPeak = sortedSpeeds[Math.floor(sortedSpeeds.length * 0.95)] || 1;
@@ -445,7 +445,9 @@ function adaptiveFilterCandidates(
   liftType: LiftType = "squat"
 ): RepCandidate[] {
   const basic = basicFilterCandidates(candidates, calibration, liftType);
-  if (basic.length <= 3) return [];
+  
+  // 🔥 FIX 1: If 3 reps or less, keep them! Do not return [] (empty array).
+  if (basic.length <= 3) return basic; 
 
   const medRange = median(basic.map((c) => c.rangePx));
   const medPeak = median(basic.map((c) => c.peakSpeed));
@@ -634,12 +636,16 @@ export function filterAndRenumber(vFrames: VelocityFrame[], options: AnalyseRepO
 
   if (!metrics.length) return result.map((f) => ({ ...f, phase: "rest" as Phase, repIndex: null }));
 
-  const medRange = median(metrics.map((m) => m.rangePx));
-  const medPeak = median(metrics.map((m) => m.peakSpeed));
+  // 🔥 FIX 2: Only apply the strict median filter if there are more than 3 reps.
+  // Otherwise, it can accidentally delete the slowest/smallest rep in a short set!
+  if (metrics.length > 3) {
+    const medRange = median(metrics.map((m) => m.rangePx));
+    const medPeak = median(metrics.map((m) => m.peakSpeed));
 
-  metrics = metrics.filter(
-    (m) => m.rangePx >= medRange * MIN_RANGE_VS_MEDIAN && m.peakSpeed >= medPeak * MIN_PEAK_VS_MEDIAN
-  );
+    metrics = metrics.filter(
+      (m) => m.rangePx >= medRange * MIN_RANGE_VS_MEDIAN && m.peakSpeed >= medPeak * MIN_PEAK_VS_MEDIAN
+    );
+  }
 
   if (!metrics.length) return result.map((f) => ({ ...f, phase: "rest" as Phase, repIndex: null }));
 
