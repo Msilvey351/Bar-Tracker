@@ -29,7 +29,7 @@ const MAX_STALL_JITTER_RANGE_FRACTION = 0.15;
 
 const MIN_SEGMENT_FRAMES = 5;
 const MIN_REP_FRAMES = 10;
-const MAX_REP_FRAMES = 600;
+const MAX_REP_FRAMES = 1500; 
 
 const ABS_MIN_VERTICAL_RANGE_PX = 8;
 const MIN_RANGE_VS_MEDIAN = 0.40;
@@ -41,9 +41,9 @@ const PAUSE_VELOCITY_FRACTION = 0.08;
 const MIN_PAUSE_DURATION_S = 0.20;
 
 const MIN_REP_RANGE_M: Record<LiftType, number> = {
-  squat: 0.04,
+  squat: 0.08, 
   bench: 0.08,
-  deadlift: 0.15,
+  deadlift: 0.12,
 };
 
 const MIN_PHASE_RANGE_M: Record<LiftType, number> = {
@@ -151,13 +151,8 @@ export function buildVelocityFrames(
   const rawSpeed: number[] = [0];
   const rawVY: number[] = [0];
 
-  // METRIC PHYSICS RULE: Max possible accelerations
-  // If scale isn't known, fallback to 250 px/m (approximate for typical phone framing)
   const pxPerM = calibration ? calibration.pxPerM : 250;
-  
-  // Gravity is 9.81. Allow 15 m/s² for ripping the bar down aggressively.
   const MAX_ACCEL_DOWN_M = 15.0; 
-  // Human upward power limit (e.g. cleans/jerks). 
   const MAX_ACCEL_UP_M = 25.0;   
 
   const maxAccelDownPx = MAX_ACCEL_DOWN_M * pxPerM;
@@ -175,14 +170,11 @@ export function buildVelocityFrames(
     let rawVy = dy / dt;
     let rawVx = dx / dt;
 
-    // Apply Kinematic Constraint to filter out tracker glitches
     const accel = (rawVy - prevVy) / dt;
 
     if (accel > maxAccelDownPx) {
-      // Clamping impossible downward spike
       rawVy = prevVy + maxAccelDownPx * dt;
     } else if (accel < -maxAccelUpPx) {
-      // Clamping impossible upward spike
       rawVy = prevVy - maxAccelUpPx * dt;
     }
 
@@ -246,8 +238,6 @@ function combineSegments(segs: MovementSegment[], vFrames: VelocityFrame[], prim
 function initialRawMovementSegments(vFrames: VelocityFrame[]): MovementSegment[] {
   if (!vFrames.length) return [];
 
-  // Sort the arrays to find the 95th percentile peak instead of the absolute max. 
-  // This makes the algorithm 100% immune to random 1-frame tracker glitches!
   const sortedSpeeds = [...vFrames.map((f) => f.velocitySmoothed)].sort((a, b) => a - b);
   const robustSpeedPeak = sortedSpeeds[Math.floor(sortedSpeeds.length * 0.95)] || 1;
 
@@ -348,12 +338,10 @@ function buildRepCandidatesByROM(
   while (i < segments.length) {
     const seg = segments[i];
 
-    // Must start with eccentric phase
     if (seg.dir !== expectedFirstDir) {
       i++; continue;
     }
 
-    // 1. Eccentric phase (accumulate down segments until reversal)
     const eccStartIdx = i;
     let eccEndIdx = i;
     let j = i + 1;
@@ -368,33 +356,48 @@ function buildRepCandidatesByROM(
     const bottomY = vFrames[segments[eccEndIdx].end].position.y;
     const totalRom = Math.abs(bottomY - baselineY);
 
-    // 2. Concentric Phase: Accumulate everything until bar returns to near baseline height.
-    // 80% return required to count the rep as finished.
-    const targetY = baselineY + signOf(bottomY - baselineY) * (totalRom * 0.10);
+    const targetY = baselineY + signOf(bottomY - baselineY) * (totalRom * 0.35);
     const concentricDir = expectedFirstDir === 1 ? -1 : 1;
 
     const concStartIdx = j;
     let concEndIdx = j;
     let k = j;
+    let passedTarget = false;
+    let abandoned = false;
 
     while (k < segments.length) {
       const currentY = vFrames[segments[k].end].position.y;
-      
-      // Video Y increases downward. 
-      // Squat Target is at TOP (small Y). 
-      const passedTarget = expectedFirstDir === 1
+      passedTarget = expectedFirstDir === 1
         ? currentY <= targetY
         : currentY >= targetY;
+
+      // 🔥 THE FIX: Depth Violation Check
+      // If we go significantly deeper than the bottom of the rep BEFORE reaching the target,
+      // it means this was a false start (like an unrack dip) and a new, real rep is starting!
+      const margin = Math.max(totalRom * 0.5, 20); // 50% deeper or 20px buffer
+      const depthViolation = expectedFirstDir === 1
+        ? currentY > bottomY + margin
+        : currentY < bottomY - margin;
+
+      if (!passedTarget && depthViolation) {
+        abandoned = true;
+        break;
+      }
 
       concEndIdx = k;
 
       if (passedTarget) {
-        break; // Rep fully completed!
+        break; 
       }
       k++;
     }
 
-    // Build the super-segments combining all the mini twitches/stalls into one fluid phase
+    if (abandoned) {
+      // It was an unrack dip. Skip the eccentric start of this failed candidate and search again.
+      i = eccStartIdx + 1;
+      continue;
+    }
+
     const firstSuper = combineSegments(segments.slice(eccStartIdx, eccEndIdx + 1), vFrames, expectedFirstDir);
     const secondSuper = combineSegments(segments.slice(concStartIdx, concEndIdx + 1), vFrames, concentricDir);
 
@@ -408,7 +411,6 @@ function buildRepCandidatesByROM(
       rangePx: Math.abs(vFrames[firstSuper.start].position.y - vFrames[firstSuper.end].position.y)
     });
 
-    // Skip pointer past this entire compiled rep
     i = concEndIdx + 1;
   }
 
@@ -446,7 +448,6 @@ function adaptiveFilterCandidates(
 ): RepCandidate[] {
   const basic = basicFilterCandidates(candidates, calibration, liftType);
   
-  // 🔥 FIX 1: If 3 reps or less, keep them! Do not return [] (empty array).
   if (basic.length <= 3) return basic; 
 
   const medRange = median(basic.map((c) => c.rangePx));
@@ -460,15 +461,7 @@ function adaptiveFilterCandidates(
 // ─── Step 5: Edge trim rack/unrack ────────────────────────────────────────────
 
 function trimEdgeCandidates(candidates: RepCandidate[]): RepCandidate[] {
-  if (candidates.length <= 1) return candidates;
-  if (candidates.length === 2) {
-    const [a, b] = candidates;
-    const maxPeak = Math.max(a.peakSpeed, b.peakSpeed);
-    const maxRange = Math.max(a.rangePx, b.rangePx);
-    return candidates.filter(
-      (c) => c.peakSpeed >= maxPeak * EDGE_TRIM_FRACTION && c.rangePx >= maxRange * EDGE_TRIM_FRACTION
-    );
-  }
+  if (candidates.length <= 3) return candidates;
 
   let trimmed = [...candidates];
   for (let pass = 0; pass < 3; pass++) {
@@ -574,7 +567,6 @@ export function detectPhasesAndReps(vFrames: VelocityFrame[], options: AnalyseRe
   const segments = buildMovementSegments(result);
   if (segments.length < 2) return result;
 
-  // New robust ROM compiler
   let candidates = buildRepCandidatesByROM(segments, result, liftType);
   if (!candidates.length) return result;
 
@@ -636,8 +628,6 @@ export function filterAndRenumber(vFrames: VelocityFrame[], options: AnalyseRepO
 
   if (!metrics.length) return result.map((f) => ({ ...f, phase: "rest" as Phase, repIndex: null }));
 
-  // 🔥 FIX 2: Only apply the strict median filter if there are more than 3 reps.
-  // Otherwise, it can accidentally delete the slowest/smallest rep in a short set!
   if (metrics.length > 3) {
     const medRange = median(metrics.map((m) => m.rangePx));
     const medPeak = median(metrics.map((m) => m.peakSpeed));
@@ -753,7 +743,6 @@ export function analyseReps(
   fps: number,
   options: AnalyseRepOptions = {}
 ): { vFrames: VelocityFrame[]; repStats: RepStats[] } {
-  // Now passing calibration into buildVelocityFrames for Physics Rules
   const withVelocity = buildVelocityFrames(frames, fps, options.calibration);
   const withReps = detectPhasesAndReps(withVelocity, options);
   const filtered = filterAndRenumber(withReps, options);
