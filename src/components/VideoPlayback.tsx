@@ -13,6 +13,12 @@ interface Props {
 export default function VideoPlayback({ file, result, vFrames }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  
+  // ── EXPORT REFS ────────────────────────────────────────────────────────────
+  const exportCanvasRef = useRef<HTMLCanvasElement>(null);
+  const isExportingRef = useRef(false); // Used in the requestAnimationFrame loop
+  const [isExporting, setIsExporting] = useState(false);
+
   const animRef = useRef<number>(0);
   const urlRef = useRef<string | null>(null);
 
@@ -33,18 +39,13 @@ export default function VideoPlayback({ file, result, vFrames }: Props) {
 
     let cancelled = false;
 
-    // Create URL
     const url = URL.createObjectURL(file);
     urlRef.current = url;
 
-    // Set attributes before src
     video.muted = true;
     video.playsInline = true;
     video.preload = "auto";
-    // Ensure no crossOrigin attribute exists
     video.removeAttribute("crossorigin");
-
-    // Apply src. Do NOT call video.load() here.
     video.src = url;
 
     const onCanPlay = () => {
@@ -83,7 +84,27 @@ export default function VideoPlayback({ file, result, vFrames }: Props) {
     };
   }, [file]);
 
-  // ── Canvas overlay animation loop ──────────────────────────────────────────
+  // ── Watermark Drawer ───────────────────────────────────────────────────────
+  const drawWatermark = (ctx: CanvasRenderingContext2D, width: number, height: number) => {
+    const padding = width * 0.04;
+    const fontSizeLarge = Math.max(Math.floor(width * 0.07), 24);
+    const fontSizeSmall = Math.max(Math.floor(width * 0.025), 12);
+
+    ctx.textAlign = "right";
+    ctx.textBaseline = "bottom";
+    
+    // Draw "VELOCITY"
+    ctx.font = `italic 900 ${fontSizeLarge}px sans-serif`;
+    ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
+    ctx.fillText("VELOCITY", width - padding, height - padding);
+
+    // Draw "TRACKED USING"
+    ctx.font = `600 ${fontSizeSmall}px sans-serif`;
+    ctx.fillStyle = "rgba(255, 255, 255, 0.6)";
+    ctx.fillText("TRACKED USING", width - padding, height - padding - fontSizeLarge);
+  };
+
+  // ── Canvas overlay & Recording loop ────────────────────────────────────────
   useEffect(() => {
     const video = videoRef.current;
     const canvas = canvasRef.current;
@@ -91,11 +112,33 @@ export default function VideoPlayback({ file, result, vFrames }: Props) {
 
     const loop = () => {
       if (video.videoWidth > 0) {
+        
+        // 1. Draw the visual tracking overlay for the user
         if (canvas.width !== video.videoWidth) {
           canvas.width = video.videoWidth;
           canvas.height = video.videoHeight;
         }
         draw(canvas, video.currentTime);
+
+        // 2. If we are exporting, composite everything into the hidden recording canvas!
+        if (isExportingRef.current && exportCanvasRef.current) {
+          const eCanvas = exportCanvasRef.current;
+          
+          if (eCanvas.width !== video.videoWidth) {
+              eCanvas.width = video.videoWidth;
+              eCanvas.height = video.videoHeight;
+          }
+          
+          const eCtx = eCanvas.getContext('2d');
+          if (eCtx) {
+              // Draw the raw video frame
+              eCtx.drawImage(video, 0, 0, eCanvas.width, eCanvas.height);
+              // Draw the tracking dots we just generated
+              eCtx.drawImage(canvas, 0, 0, eCanvas.width, eCanvas.height);
+              // Draw the VELOCITY watermark
+              drawWatermark(eCtx, eCanvas.width, eCanvas.height);
+          }
+        }
       }
       animRef.current = requestAnimationFrame(loop);
     };
@@ -104,8 +147,84 @@ export default function VideoPlayback({ file, result, vFrames }: Props) {
     return () => cancelAnimationFrame(animRef.current);
   }, [draw]);
 
+  // ── Video Export Logic ─────────────────────────────────────────────────────
+  const exportVideo = async () => {
+    const video = videoRef.current;
+    const eCanvas = exportCanvasRef.current;
+    if (!video || !eCanvas) return;
+
+    setIsExporting(true);
+    isExportingRef.current = true; // Sync ref for the rAF loop
+
+    try {
+      // Reset video to start
+      video.pause();
+      video.currentTime = 0;
+
+      // Allow a split second for the canvas to resize
+      await new Promise((resolve) => setTimeout(resolve, 100)); 
+
+      // Start capturing the canvas stream at 30fps
+      const stream = eCanvas.captureStream(30); 
+      
+      // Safari prefers mp4, Chrome prefers webm. Try mp4 first.
+      let mimeType = 'video/webm';
+      if (MediaRecorder.isTypeSupported('video/mp4')) {
+          mimeType = 'video/mp4';
+      }
+
+      // High quality bitrate
+      const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 2500000 });
+      const chunks: Blob[] = [];
+
+      recorder.ondataavailable = (e) => {
+          if (e.data.size > 0) chunks.push(e.data);
+      };
+
+      recorder.onstop = () => {
+          const blob = new Blob(chunks, { type: mimeType });
+          const url = URL.createObjectURL(blob);
+          
+          const link = document.createElement("a");
+          const dateStr = new Date().toISOString().split("T")[0];
+          const ext = mimeType.includes('mp4') ? 'mp4' : 'webm';
+          
+          link.download = `velocity_tracked_${dateStr}.${ext}`;
+          link.href = url;
+          link.click();
+          
+          URL.revokeObjectURL(url);
+          setIsExporting(false);
+          isExportingRef.current = false;
+          setPlaying(false);
+      };
+
+      recorder.start();
+
+      // Stop recording exactly when the video finishes playing
+      const handleEnd = () => {
+          recorder.stop();
+          video.removeEventListener('ended', handleEnd);
+      };
+      
+      video.addEventListener('ended', handleEnd);
+      
+      // Start playback to drive the recording
+      await video.play();
+      setPlaying(true);
+
+    } catch (err) {
+      console.error("Export failed:", err);
+      setError("Failed to export video. Your browser may not support MediaRecorder.");
+      setIsExporting(false);
+      isExportingRef.current = false;
+      setPlaying(false);
+    }
+  };
+
   // ── Controls ───────────────────────────────────────────────────────────────
   const togglePlay = async () => {
+    if (isExporting) return; // Block interaction during export
     const video = videoRef.current;
     if (!video) return;
 
@@ -123,6 +242,7 @@ export default function VideoPlayback({ file, result, vFrames }: Props) {
   };
 
   const restart = () => {
+    if (isExporting) return;
     const video = videoRef.current;
     if (!video) return;
     video.currentTime = 0;
@@ -130,7 +250,9 @@ export default function VideoPlayback({ file, result, vFrames }: Props) {
     setPlaying(false);
   };
 
-  const onEnded = () => setPlaying(false);
+  const onEnded = () => {
+    if (!isExporting) setPlaying(false);
+  };
 
   return (
     <div className="flex flex-col gap-3">
@@ -160,6 +282,15 @@ export default function VideoPlayback({ file, result, vFrames }: Props) {
           </div>
         )}
 
+        {/* Recording Overlay */}
+        {isExporting && (
+          <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-black/70 backdrop-blur-sm">
+             <div className="w-10 h-10 border-4 border-red-500 border-t-transparent rounded-full animate-spin mb-4" />
+             <p className="text-white font-bold animate-pulse text-lg">Generating Video...</p>
+             <p className="text-white/60 text-sm mt-1">Please wait while the video plays</p>
+          </div>
+        )}
+
         {/* Video element */}
         <video
           ref={videoRef}
@@ -173,15 +304,18 @@ export default function VideoPlayback({ file, result, vFrames }: Props) {
           }}
         />
 
-        {/* Canvas overlay */}
+        {/* Visual Canvas overlay */}
         <canvas
           ref={canvasRef}
           className="absolute inset-0 w-full h-full"
           style={{ pointerEvents: "none", display: error ? "none" : "block" }}
         />
+        
+        {/* Hidden Export Canvas (Used for MediaRecorder) */}
+        <canvas ref={exportCanvasRef} className="hidden" />
 
         {/* Tap to play overlay when paused */}
-        {ready && !playing && !error && (
+        {ready && !playing && !error && !isExporting && (
           <button
             onClick={togglePlay}
             className="absolute inset-0 flex items-center justify-center bg-black/20 z-10"
@@ -194,10 +328,10 @@ export default function VideoPlayback({ file, result, vFrames }: Props) {
       </div>
 
       {/* Controls */}
-      <div className="flex gap-3 justify-center">
+      <div className="flex flex-wrap gap-3 justify-center">
         <button
           onClick={togglePlay}
-          disabled={!ready || !!error}
+          disabled={!ready || !!error || isExporting}
           className="px-6 py-2.5 bg-orange-500 hover:bg-orange-600 disabled:bg-orange-500/40 text-white font-bold rounded-xl transition-colors"
         >
           {playing ? "⏸ Pause" : "▶ Play"}
@@ -205,10 +339,18 @@ export default function VideoPlayback({ file, result, vFrames }: Props) {
 
         <button
           onClick={restart}
-          disabled={!ready || !!error}
+          disabled={!ready || !!error || isExporting}
           className="px-6 py-2.5 bg-white/10 hover:bg-white/20 disabled:bg-white/5 text-white rounded-xl transition-colors"
         >
           ↩ Restart
+        </button>
+        
+        <button
+          onClick={exportVideo}
+          disabled={!ready || !!error || isExporting}
+          className="flex items-center gap-2 px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-600/40 text-white font-bold rounded-xl transition-colors"
+        >
+          <span>📸</span> Save Video
         </button>
       </div>
     </div>
