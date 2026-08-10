@@ -16,13 +16,11 @@ export default function SeedStep({ file, onSeedSet }: SeedStepProps) {
   const [modelLoading, setModelLoading] = useState(true);
   const [videoReady, setVideoReady] = useState(false);
   const [aiBox, setAiBox] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
-  const [autoStartCountdown, setAutoStartCountdown] = useState<number | null>(null);
 
   // 1. Load the video file
   useEffect(() => {
     setVideoReady(false);
     setAiBox(null); 
-    setAutoStartCountdown(null);
 
     if (!file || !videoRef.current) return;
     const url = URL.createObjectURL(file);
@@ -52,7 +50,6 @@ export default function SeedStep({ file, onSeedSet }: SeedStepProps) {
         if (box) {
           console.log("🎯 Barbell Found!", box);
           setAiBox(box);
-          setAutoStartCountdown(2);
         } else {
           console.log("🤷‍♂️ AI scanned but couldn't confidently find a plate.");
         }
@@ -61,8 +58,8 @@ export default function SeedStep({ file, onSeedSet }: SeedStepProps) {
       }
     };
 
-    // 🔥 FIX: Force the video to render a frame by seeking slightly, 
-    // then wait 250ms for the browser to physically paint the pixels before scanning!
+    // Force the video to render a frame by seeking slightly, 
+    // then wait 250ms for the browser to physically paint the pixels before scanning
     videoRef.current.currentTime = 0.1;
     const timer = setTimeout(() => {
       scanFirstFrame();
@@ -70,20 +67,6 @@ export default function SeedStep({ file, onSeedSet }: SeedStepProps) {
     
     return () => clearTimeout(timer);
   }, [modelLoading, videoReady, file]);
-
-  // 4. Handle the Countdown Timer
-  useEffect(() => {
-    if (autoStartCountdown === null) return;
-    
-    if (autoStartCountdown > 0) {
-      const timer = setTimeout(() => setAutoStartCountdown(autoStartCountdown - 1), 1000);
-      return () => clearTimeout(timer);
-    } 
-    
-    if (autoStartCountdown === 0 && aiBox) {
-      startAnalysis();
-    }
-  }, [autoStartCountdown, aiBox]);
 
   const startAnalysis = () => {
     if (!aiBox) return;
@@ -93,7 +76,7 @@ export default function SeedStep({ file, onSeedSet }: SeedStepProps) {
 
     const autoCalibration: CalibrationPoints = {
       top: { x: 0, y: 0 },
-      bottom: { x: 0, y: aiBox.height }, // The height of the bounding box is 45cm
+      bottom: { x: 0, y: aiBox.height }, 
       diameterCm: 45,
       pxPerCm: finalPxPerCm,
       pxPerM: finalPxPerCm * 100,
@@ -106,7 +89,7 @@ export default function SeedStep({ file, onSeedSet }: SeedStepProps) {
 
     const seedPoint: Point = { 
       x: aiBox.x, 
-      y: aiBox.y - offsetPixels // Subtracting moves it UP on the screen
+      y: aiBox.y - offsetPixels 
     };
 
     onSeedSet(seedPoint, autoCalibration, liftType);
@@ -137,8 +120,9 @@ export default function SeedStep({ file, onSeedSet }: SeedStepProps) {
   };
 
   return (
-    <div className="flex flex-col items-center max-w-lg mx-auto w-full gap-6 animate-in fade-in slide-in-from-bottom-4">
+    <div className="flex flex-col items-center max-w-lg mx-auto w-full gap-6 animate-in fade-in slide-in-from-bottom-4 pb-8">
       
+      {/* Lift Selector */}
       <div className="w-full bg-zinc-900 p-4 rounded-xl border border-zinc-800 shadow-lg">
         <label className="block text-sm font-semibold text-white/80 mb-2">
           What lift is this?
@@ -154,12 +138,13 @@ export default function SeedStep({ file, onSeedSet }: SeedStepProps) {
         </select>
       </div>
 
-      <div className="text-center space-y-1 h-12 flex flex-col justify-center">
+      {/* Status Text */}
+      <div className="text-center space-y-1 h-6 flex flex-col justify-center">
         {modelLoading ? (
           <p className="text-sm text-orange-400 animate-pulse">Loading AI Vision...</p>
         ) : aiBox ? (
           <p className="text-sm text-emerald-400 font-bold">
-            Plate found! Starting in {autoStartCountdown}...
+            Plate found! Ready when you are.
           </p>
         ) : (
           <p className="text-sm text-white/50">
@@ -168,12 +153,13 @@ export default function SeedStep({ file, onSeedSet }: SeedStepProps) {
         )}
       </div>
 
+      {/* Video Preview */}
       <div className="relative w-full aspect-[9/16] max-h-[60vh] bg-black rounded-lg overflow-hidden border border-zinc-800 shadow-xl flex items-center justify-center">
         <video
           ref={videoRef}
           onCanPlay={() => setVideoReady(true)}
           onClick={handleManualClick}
-          className="max-w-full max-h-full object-contain"
+          className={`max-w-full max-h-full object-contain ${!aiBox ? "cursor-pointer" : ""}`}
           playsInline
           muted
         /> 
@@ -192,6 +178,20 @@ export default function SeedStep({ file, onSeedSet }: SeedStepProps) {
           </div>
         )}
       </div>
+
+      {/* Start Button */}
+      <button
+        onClick={startAnalysis}
+        disabled={!aiBox}
+        className={`
+          w-full py-4 rounded-xl font-bold text-lg shadow-lg transition-all
+          ${aiBox 
+            ? "bg-orange-500 text-white hover:bg-orange-600 hover:shadow-orange-500/20 hover:-translate-y-0.5" 
+            : "bg-zinc-800 text-zinc-500 cursor-not-allowed border border-zinc-700"}
+        `}
+      >
+        {aiBox ? "Start Analysis 🚀" : "Waiting for AI..."}
+      </button>
 
     </div>
   );
