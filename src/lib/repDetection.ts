@@ -27,6 +27,9 @@ const MAX_SAME_DIRECTION_STALL_GAP_S = 0.40;
 const MAX_STALL_JITTER_DURATION_S = 0.20;
 const MAX_STALL_JITTER_RANGE_FRACTION = 0.15;
 
+// 🔥 THE FIX: If there is a > 0.8s dead stop between two movements in the same direction, divorce them!
+const MAX_PHASE_GAP_S = 0.8; 
+
 const MIN_SEGMENT_FRAMES = 5;
 const MIN_REP_FRAMES = 10;
 const MAX_REP_FRAMES = 1500; 
@@ -324,7 +327,7 @@ function buildMovementSegments(vFrames: VelocityFrame[]): MovementSegment[] {
   return merged;
 }
 
-// ─── Step 3: DISPLACEMENT-BASED REP COMPILATION (Solves Grinders) ─────────────
+// ─── Step 3: DISPLACEMENT-BASED REP COMPILATION ─────────────
 
 function buildRepCandidatesByROM(
   segments: MovementSegment[],
@@ -346,8 +349,15 @@ function buildRepCandidatesByROM(
     let eccEndIdx = i;
     let j = i + 1;
 
+    // 🔥 PREVENTS UNRACK MERGING: 
+    // If the lifter stops for more than 0.8s, don't group this with the next movement.
     while (j < segments.length && segments[j].dir === expectedFirstDir) {
-      eccEndIdx = j; j++;
+      const gap = frameGapSeconds(vFrames, segments[j - 1].end, segments[j].start);
+      if (gap > MAX_PHASE_GAP_S) {
+        break; 
+      }
+      eccEndIdx = j; 
+      j++;
     }
 
     if (j >= segments.length) break;
@@ -371,10 +381,7 @@ function buildRepCandidatesByROM(
         ? currentY <= targetY
         : currentY >= targetY;
 
-      // 🔥 THE FIX: Depth Violation Check
-      // If we go significantly deeper than the bottom of the rep BEFORE reaching the target,
-      // it means this was a false start (like an unrack dip) and a new, real rep is starting!
-      const margin = Math.max(totalRom * 0.5, 20); // 50% deeper or 20px buffer
+      const margin = Math.max(totalRom * 0.5, 20);
       const depthViolation = expectedFirstDir === 1
         ? currentY > bottomY + margin
         : currentY < bottomY - margin;
@@ -393,7 +400,6 @@ function buildRepCandidatesByROM(
     }
 
     if (abandoned) {
-      // It was an unrack dip. Skip the eccentric start of this failed candidate and search again.
       i = eccStartIdx + 1;
       continue;
     }
