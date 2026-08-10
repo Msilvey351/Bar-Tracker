@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect, useRef } from "react";
 import type { AnalysisResult, CalibrationPoints, LiftType } from "@/types";
 import { analyseReps } from "@/lib/repDetection";
 import VideoPlayback from "./VideoPlayback";
@@ -9,6 +9,7 @@ import RepTable from "./RepTable";
 import AuthModal from "./AuthModal";
 import SaveSetModal from "./SaveSetModal";
 import { useAuth } from "@/context/AuthContext";
+import { saveLiftTelemetry } from "@/lib/telemetry";
 
 interface Props {
   result: AnalysisResult;
@@ -33,11 +34,22 @@ export default function ResultsStep({
   const [savedDone, setSavedDone] = useState(false);
 
   const { user } = useAuth();
+  
+  // Track if we've already sent telemetry for this specific video so we don't spam the DB
+  const telemetrySent = useRef(false);
 
   const { vFrames, repStats } = useMemo(
     () => analyseReps(result.frames, result.fps, { calibration, liftType }),
     [result, calibration, liftType]
   );
+
+  // 🔥 STEP 2: Fire off the telemetry in the background once analysis is ready
+  useEffect(() => {
+    if (!telemetrySent.current && vFrames.length > 0) {
+      saveLiftTelemetry(liftType, vFrames, repStats.length);
+      telemetrySent.current = true;
+    }
+  }, [vFrames, repStats.length, liftType]);
 
   const views: { id: ResultView; label: string; icon: string }[] = [
     { id: "table", label: "Rep Stats", icon: "📊" },
