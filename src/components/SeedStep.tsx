@@ -61,8 +61,15 @@ export default function SeedStep({ file, onSeedSet }: SeedStepProps) {
       }
     };
 
-    scanFirstFrame();
-  }, [modelLoading, videoReady, file]); // React runs this perfectly now
+    // 🔥 FIX: Force the video to render a frame by seeking slightly, 
+    // then wait 250ms for the browser to physically paint the pixels before scanning!
+    videoRef.current.currentTime = 0.1;
+    const timer = setTimeout(() => {
+      scanFirstFrame();
+    }, 250);
+    
+    return () => clearTimeout(timer);
+  }, [modelLoading, videoReady, file]);
 
   // 4. Handle the Countdown Timer
   useEffect(() => {
@@ -164,7 +171,7 @@ export default function SeedStep({ file, onSeedSet }: SeedStepProps) {
       <div className="relative w-full aspect-[9/16] max-h-[60vh] bg-black rounded-lg overflow-hidden border border-zinc-800 shadow-xl flex items-center justify-center">
         <video
           ref={videoRef}
-          onLoadedData={() => setVideoReady(true)} /* 🔥 Let React tell us it's ready */
+          onCanPlay={() => setVideoReady(true)}
           onClick={handleManualClick}
           className="max-w-full max-h-full object-contain"
           playsInline
