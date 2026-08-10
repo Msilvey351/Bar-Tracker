@@ -41,7 +41,7 @@ const PAUSE_VELOCITY_FRACTION = 0.08;
 const MIN_PAUSE_DURATION_S = 0.20;
 
 const MIN_REP_RANGE_M: Record<LiftType, number> = {
-  squat: 0.12,
+  squat: 0.04,
   bench: 0.08,
   deadlift: 0.15,
 };
