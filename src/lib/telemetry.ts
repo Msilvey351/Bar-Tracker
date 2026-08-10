@@ -35,6 +35,8 @@ export async function saveLiftTelemetry(
       heuristicRepCount,
       trajectory,
     };
+    
+    console.log("🚀 [Telemetry] Sending payload to API...", payload);
 
     // 2. Fire and forget (don't await it so it doesn't block the UI)
     fetch("/api/telemetry", {
