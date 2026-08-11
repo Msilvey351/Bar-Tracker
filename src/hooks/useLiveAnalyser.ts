@@ -45,9 +45,11 @@ export function useLiveAnalyser() {
   const [recordedVideoBlob, setRecordedVideoBlob] = useState<Blob | null>(null);
   const [liveVelocity, setLiveVelocity] = useState<number | null>(null);
   
-  // ✨ NEW: Audio Toggle State
+  // ✨ NEW: Threshold Met state
+  const [thresholdMet, setThresholdMet] = useState(false);
+  
   const [audioEnabled, setAudioEnabled] = useState(true);
-  const audioEnabledRef = useRef(true); // Ref so the tracking loop doesn't get stale closures
+  const audioEnabledRef = useRef(true); 
   
   useEffect(() => {
     audioEnabledRef.current = audioEnabled;
@@ -126,11 +128,11 @@ export function useLiveAnalyser() {
     }
   }, [stream]);
 
-  const startTracking = async (seedX: number, seedY: number, plateHeightPx?: number) => {
+  // ✨ UPDATED: Accept lossThresholdPct
+  const startTracking = async (seedX: number, seedY: number, plateHeightPx?: number, lossThresholdPct?: number | null) => {
     const video = videoRef.current;
     if (!video || !workerRef.current) return;
 
-    // 🔥 AUDIO UNLOCK HACK: Play a silent utterance immediately on tap (if enabled)
     if (audioEnabledRef.current && 'speechSynthesis' in window) {
       const silent = new SpeechSynthesisUtterance("");
       window.speechSynthesis.speak(silent);
@@ -150,6 +152,7 @@ export function useLiveAnalyser() {
     setIsTracking(true);
     isTrackingRef.current = true;
     setLiveVelocity(null);
+    setThresholdMet(false); // ✨ Reset threshold state for new set
 
     const videoWidth = video.videoWidth;
     const videoHeight = video.videoHeight;
@@ -167,7 +170,6 @@ export function useLiveAnalyser() {
     ctx.drawImage(video, 0, 0, SCALED_WIDTH, scaledH);
     const firstImage = ctx.getImageData(0, 0, SCALED_WIDTH, scaledH);
     
-    const yOffset = videoHeight * 0.05; 
     let trackerPoint = { x: seedX * scale, y: seedY * scale };
     
     await workerSend({ type: "seed", x: trackerPoint.x, y: trackerPoint.y, imageData: firstImage }, "ack", [firstImage.data.buffer]);
@@ -181,6 +183,9 @@ export function useLiveAnalyser() {
     const recentYs: number[] = [];
     const recentTimes: number[] = [];
     const pxPerM = plateHeightPx ? plateHeightPx / 0.45 : null;
+
+    // ✨ NEW: Track the fastest rep in the set
+    let maxRepVelocity = 0;
 
     const trackLoop = async () => {
       if (!isTrackingRef.current && framesRef.current.length > 0) return; 
@@ -233,10 +238,28 @@ export function useLiveAnalyser() {
               const avgVel = distM / durS;
               setLiveVelocity(avgVel);
 
-              // ✨ TEXT TO SPEECH CALLOUT (Checks the new toggle state!)
+              let isStopSet = false;
+
+              // ✨ VBT MATH: Compare against fastest rep
+              if (maxRepVelocity === 0) {
+                maxRepVelocity = avgVel;
+              } else {
+                if (avgVel > maxRepVelocity) maxRepVelocity = avgVel; // New PR rep!
+                
+                if (lossThresholdPct) {
+                  const velocityLoss = ((maxRepVelocity - avgVel) / maxRepVelocity) * 100;
+                  if (velocityLoss >= lossThresholdPct) {
+                    isStopSet = true;
+                    setThresholdMet(true);
+                  }
+                }
+              }
+
               if (audioEnabledRef.current && 'speechSynthesis' in window) {
                 window.speechSynthesis.cancel(); 
-                const utterance = new SpeechSynthesisUtterance(avgVel.toFixed(2));
+                // ✨ Add "Stop set" to the utterance if threshold is crossed
+                const text = isStopSet ? `${avgVel.toFixed(2)}. Stop set!` : avgVel.toFixed(2);
+                const utterance = new SpeechSynthesisUtterance(text);
                 utterance.rate = 1.1; 
                 window.speechSynthesis.speak(utterance);
               }
@@ -284,8 +307,9 @@ export function useLiveAnalyser() {
     currentPoint,
     recordedVideoBlob,
     liveVelocity,
-    audioEnabled,    // ✨ Export state
-    setAudioEnabled, // ✨ Export setter
+    audioEnabled,    
+    setAudioEnabled,
+    thresholdMet, // ✨ Export state for UI flashing
     startCamera,
     stopCamera,
     startTracking,

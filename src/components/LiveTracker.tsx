@@ -31,8 +31,9 @@ export function LiveTracker({ onSetComplete, onCancel }: LiveTrackerProps) {
     stopTracking,
     toggleCamera, 
     liveVelocity,
-    audioEnabled,    // ✨ New
-    setAudioEnabled, // ✨ New
+    audioEnabled,    
+    setAudioEnabled,
+    thresholdMet, // ✨ New
   } = useLiveAnalyser();
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -51,6 +52,9 @@ export function LiveTracker({ onSetComplete, onCancel }: LiveTrackerProps) {
   const [bottomLine, setBottomLine] = useState(70);
 
   const [finalPlateHeight, setFinalPlateHeight] = useState<number | null>(null);
+  
+  // ✨ NEW: User's chosen Velocity Loss Threshold (Default 20%)
+  const [velocityThreshold, setVelocityThreshold] = useState<number | null>(20);
 
   useEffect(() => {
     startCamera();
@@ -132,9 +136,12 @@ export function LiveTracker({ onSetComplete, onCancel }: LiveTrackerProps) {
       
       const manualPlateHeightPx = Math.abs(by - ty);
       setFinalPlateHeight(manualPlateHeightPx);
-      startTracking(cx, cy, manualPlateHeightPx);
+      
+      // ✨ Pass threshold to tracker
+      startTracking(cx, cy, manualPlateHeightPx, velocityThreshold);
     } else if (aiBox) {
-      startTracking(aiBox.x, aiBox.y, aiBox.height);
+      // ✨ Pass threshold to tracker
+      startTracking(aiBox.x, aiBox.y, aiBox.height, velocityThreshold);
     }
   };
 
@@ -148,6 +155,14 @@ export function LiveTracker({ onSetComplete, onCancel }: LiveTrackerProps) {
     onSetComplete(frames, estimatedFps, videoRef.current.videoWidth, videoRef.current.videoHeight, finalPlateHeight, blob);
   };
 
+  // UI helper for threshold descriptions
+  const getThresholdLabel = () => {
+    if (velocityThreshold === null) return "Disabled";
+    if (velocityThreshold <= 10) return "Peak Power / Speed";
+    if (velocityThreshold <= 20) return "Strength";
+    return "Hypertrophy / Failure";
+  };
+
   return (
     <div className="flex flex-col items-center justify-center w-full max-w-md mx-auto space-y-4">
       {/* Header */}
@@ -155,7 +170,9 @@ export function LiveTracker({ onSetComplete, onCancel }: LiveTrackerProps) {
         {modelLoading ? (
           <p className="text-sm text-orange-400 animate-pulse">Loading AI Vision...</p>
         ) : isTracking ? (
-          <h2 className="text-2xl font-bold text-green-400">Recording Set 🟢</h2>
+          <h2 className={`text-2xl font-bold ${thresholdMet ? 'text-red-500 animate-pulse' : 'text-green-400'}`}>
+            {thresholdMet ? "🛑 STOP SET 🛑" : "Recording Set 🟢"}
+          </h2>
         ) : isManualMode ? (
           <p className="text-sm text-blue-400 font-bold">Align the crosshair and bracket the plate.</p>
         ) : scanFailed ? (
@@ -183,28 +200,46 @@ export function LiveTracker({ onSetComplete, onCancel }: LiveTrackerProps) {
           className="absolute inset-0 w-full h-full object-cover pointer-events-none"
         />
 
-        {/* ✨ SLEEK CORNER OVERLAY */}
+        {/* ✨ MASSIVE STOP SET VISUAL INDICATOR */}
+        {isTracking && thresholdMet && (
+          <>
+            {/* Flashing Red Border */}
+            <div className="absolute inset-0 border-8 border-red-600/80 rounded-lg pointer-events-none z-30 animate-pulse" />
+            
+            {/* Center Warning Overlay */}
+            <div className="absolute top-1/3 left-0 right-0 flex justify-center z-50 pointer-events-none animate-in zoom-in duration-300">
+              <div className="bg-red-600 px-6 py-3 rounded-2xl shadow-2xl flex items-center gap-3 border-2 border-white/20">
+                <span className="text-4xl">🛑</span>
+                <span className="text-white font-black text-3xl uppercase tracking-wider">Stop Set</span>
+              </div>
+            </div>
+          </>
+        )}
+
+        {/* Sleek Corner Overlay */}
         {isTracking && liveVelocity !== null && (
           <div 
-            key={liveVelocity} // The key re-triggers the CSS animation on new rep
+            key={liveVelocity} 
             className="absolute top-4 left-4 z-40 animate-in slide-in-from-top-2 fade-in duration-300"
           >
-            <div className="bg-black/60 backdrop-blur-md px-4 py-2 rounded-2xl border border-white/20 shadow-xl flex flex-col items-center">
-              <span className="text-white/60 text-[10px] font-bold uppercase tracking-widest mb-0.5">Rep Speed</span>
+            <div className={`backdrop-blur-md px-4 py-2 rounded-2xl border shadow-xl flex flex-col items-center ${
+              thresholdMet ? 'bg-red-900/80 border-red-500/50' : 'bg-black/60 border-white/20'
+            }`}>
+              <span className={`text-[10px] font-bold uppercase tracking-widest mb-0.5 ${thresholdMet ? 'text-red-200' : 'text-white/60'}`}>
+                Rep Speed
+              </span>
               <div className="flex items-baseline gap-1">
                 <span className="text-3xl font-black text-white tabular-nums drop-shadow-md">
                   {liveVelocity.toFixed(2)}
                 </span>
-                <span className="text-white/50 text-sm font-bold">m/s</span>
+                <span className={`text-sm font-bold ${thresholdMet ? 'text-red-300' : 'text-white/50'}`}>m/s</span>
               </div>
             </div>
           </div>
         )}
 
-        {/* ✨ TOP RIGHT CONTROLS (Stacked) */}
+        {/* Top Right Controls (Stacked) */}
         <div className="absolute top-4 right-4 z-30 flex flex-col gap-3">
-          
-          {/* Flip Camera (Hidden during tracking) */}
           {!isTracking && (
             <button
               onClick={(e) => { e.stopPropagation(); toggleCamera(); }}
@@ -216,7 +251,6 @@ export function LiveTracker({ onSetComplete, onCancel }: LiveTrackerProps) {
             </button>
           )}
 
-          {/* Audio Toggle (Always visible so you can mute mid-set) */}
           <button
             onClick={(e) => { e.stopPropagation(); setAudioEnabled(!audioEnabled); }}
             className={`w-10 h-10 backdrop-blur-md border border-white/10 rounded-full flex items-center justify-center shadow-lg transition-all ${
@@ -234,64 +268,64 @@ export function LiveTracker({ onSetComplete, onCancel }: LiveTrackerProps) {
               </svg>
             )}
           </button>
-
         </div>
 
-        {/* AI Bounding Box Overlay */}
+        {/* AI Box / Manual Calibrations omitted for brevity in explanation, but left intact below */}
         {!isTracking && !isManualMode && aiBox && videoRef.current && (
-          <div
-            className="absolute border-2 border-emerald-500 bg-emerald-500/10 transition-all duration-75 pointer-events-none"
-            style={{
-              left: `${((aiBox.x - aiBox.width / 2) / videoRef.current.videoWidth) * 100}%`,
-              top: `${((aiBox.y - aiBox.height / 2) / videoRef.current.videoHeight) * 100}%`,
-              width: `${(aiBox.width / videoRef.current.videoWidth) * 100}%`,
-              height: `${(aiBox.height / videoRef.current.videoHeight) * 100}%`,
-            }}
-          />
+          <div className="absolute border-2 border-emerald-500 bg-emerald-500/10 transition-all duration-75 pointer-events-none" style={{ left: `${((aiBox.x - aiBox.width / 2) / videoRef.current.videoWidth) * 100}%`, top: `${((aiBox.y - aiBox.height / 2) / videoRef.current.videoHeight) * 100}%`, width: `${(aiBox.width / videoRef.current.videoWidth) * 100}%`, height: `${(aiBox.height / videoRef.current.videoHeight) * 100}%` }} />
         )}
-
-        {/* Manual Calibration Overlay */}
         {!isTracking && isManualMode && (
           <>
-            <div className="absolute left-0 right-0 h-12 -mt-6 cursor-row-resize flex items-center justify-center z-10 touch-none" style={{ top: `${topLine}%` }} onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); setActiveDrag("topLine"); }}>
-              <div className="w-full border-t-[3px] border-dashed border-blue-500 shadow-sm opacity-80" />
-              <span className="absolute bg-blue-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-full right-4">Top of Plate</span>
-            </div>
-            <div className="absolute left-0 right-0 h-12 -mt-6 cursor-row-resize flex items-center justify-center z-10 touch-none" style={{ top: `${bottomLine}%` }} onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); setActiveDrag("bottomLine"); }}>
-              <div className="w-full border-t-[3px] border-dashed border-blue-500 shadow-sm opacity-80" />
-              <span className="absolute bg-blue-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-full right-4">Bottom of Plate</span>
-            </div>
-            <div className="absolute w-16 h-16 -ml-8 -mt-8 cursor-move flex items-center justify-center z-20 touch-none" style={{ left: `${crosshair.x}%`, top: `${crosshair.y}%` }} onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); setActiveDrag("crosshair"); }}>
-              <div className="w-10 h-10 rounded-full border-[3px] border-orange-500 bg-orange-500/30 flex items-center justify-center shadow-lg"><div className="w-1.5 h-1.5 bg-white rounded-full shadow-md" /></div>
-            </div>
+            <div className="absolute left-0 right-0 h-12 -mt-6 cursor-row-resize flex items-center justify-center z-10 touch-none" style={{ top: `${topLine}%` }} onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); setActiveDrag("topLine"); }}><div className="w-full border-t-[3px] border-dashed border-blue-500 shadow-sm opacity-80" /><span className="absolute bg-blue-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-full right-4">Top of Plate</span></div>
+            <div className="absolute left-0 right-0 h-12 -mt-6 cursor-row-resize flex items-center justify-center z-10 touch-none" style={{ top: `${bottomLine}%` }} onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); setActiveDrag("bottomLine"); }}><div className="w-full border-t-[3px] border-dashed border-blue-500 shadow-sm opacity-80" /><span className="absolute bg-blue-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-full right-4">Bottom of Plate</span></div>
+            <div className="absolute w-16 h-16 -ml-8 -mt-8 cursor-move flex items-center justify-center z-20 touch-none" style={{ left: `${crosshair.x}%`, top: `${crosshair.y}%` }} onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); setActiveDrag("crosshair"); }}><div className="w-10 h-10 rounded-full border-[3px] border-orange-500 bg-orange-500/30 flex items-center justify-center shadow-lg"><div className="w-1.5 h-1.5 bg-white rounded-full shadow-md" /></div></div>
           </>
         )}
-
-        {/* Live Tracking Red Dot */}
         {isTracking && currentPoint && videoRef.current && (
-          <div
-            className="absolute w-8 h-8 border-2 border-red-500 rounded-full flex items-center justify-center pointer-events-none transform -translate-x-1/2 -translate-y-1/2 shadow-[0_0_10px_rgba(239,68,68,0.5)]"
-            style={{
-              left: `${(currentPoint.x / videoRef.current.videoWidth) * 100}%`,
-              top: `${(currentPoint.y / videoRef.current.videoHeight) * 100}%`,
-            }}
-          >
-            <div className="w-2 h-2 bg-red-500 rounded-full" />
-          </div>
+          <div className="absolute w-8 h-8 border-2 border-red-500 rounded-full flex items-center justify-center pointer-events-none transform -translate-x-1/2 -translate-y-1/2 shadow-[0_0_10px_rgba(239,68,68,0.5)]" style={{ left: `${(currentPoint.x / videoRef.current.videoWidth) * 100}%`, top: `${(currentPoint.y / videoRef.current.videoHeight) * 100}%` }}><div className="w-2 h-2 bg-red-500 rounded-full" /></div>
         )}
       </div>
 
-      {/* Buttons Area */}
+      {/* Settings & Buttons Area */}
       <div className="w-full flex flex-col gap-3">
+        
+        {/* ✨ NEW: Pre-workout Settings Block */}
+        {!isTracking && (
+          <div className="w-full bg-zinc-900/60 p-3 rounded-xl border border-zinc-800 shadow-inner">
+            <div className="flex justify-between items-center mb-2 px-1">
+              <span className="text-xs font-bold text-white/70 uppercase tracking-wider">Velocity Loss Threshold</span>
+              <span className="text-[10px] text-blue-400 font-bold bg-blue-500/10 px-2 py-0.5 rounded">
+                {getThresholdLabel()}
+              </span>
+            </div>
+            <div className="flex gap-1.5">
+              {[null, 10, 15, 20, 30].map(val => (
+                <button
+                  key={val === null ? 'off' : val}
+                  onClick={() => setVelocityThreshold(val)}
+                  className={`flex-1 py-1.5 rounded-lg text-sm font-semibold transition-all ${
+                    velocityThreshold === val 
+                      ? "bg-blue-600 text-white shadow-md shadow-blue-900/50" 
+                      : "bg-black/40 text-white/40 hover:bg-white/10 hover:text-white/80"
+                  }`}
+                >
+                  {val === null ? "Off" : `${val}%`}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Existing Action Buttons */}
         {isTracking ? (
-          <button onClick={handleStop} className="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-4 rounded-xl text-xl transition-all shadow-lg">END SET</button>
+          <button onClick={handleStop} className="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-4 rounded-xl text-xl transition-all shadow-lg border border-red-500/50">END SET</button>
         ) : scanFailed && !isManualMode ? (
           <div className="flex gap-3 w-full">
             <button onClick={startScanning} className="flex-1 bg-zinc-800 hover:bg-zinc-700 text-white py-4 rounded-xl font-semibold transition-all">Try Again 🔄</button>
             <button onClick={() => setIsManualMode(true)} className="flex-1 bg-orange-500 hover:bg-orange-600 text-white py-4 rounded-xl font-bold transition-all">Select Manually 🎯</button>
           </div>
         ) : (
-          <button onClick={beginTracking} disabled={!aiBox && !isManualMode} className={`w-full py-4 rounded-xl font-bold text-lg shadow-lg transition-all ${(aiBox || isManualMode) ? "bg-emerald-500 text-white hover:bg-emerald-600 hover:shadow-emerald-500/20" : "bg-zinc-800 text-zinc-500 cursor-not-allowed border border-zinc-700"}`}>
+          <button onClick={beginTracking} disabled={!aiBox && !isManualMode} className={`w-full py-4 rounded-xl font-bold text-lg shadow-lg transition-all ${(aiBox || isManualMode) ? "bg-emerald-500 text-white hover:bg-emerald-600 hover:shadow-emerald-500/20 border border-emerald-400/50" : "bg-zinc-800 text-zinc-500 cursor-not-allowed border border-zinc-700"}`}>
             {isManualMode ? "Start Tracking 🚀" : aiBox ? "Start Tracking 🚀" : "Waiting..."}
           </button>
         )}
