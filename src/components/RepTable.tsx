@@ -105,7 +105,9 @@ export default function RepTable({ stats, calibration }: Props) {
     return isCalib ? fmt(v, 2) : fmt(v, 0);
   };
 
+  // Keep rep1Peak for the table coloring, but add rep1Avg for the stat cards!
   const rep1Peak = stats[0]?.peakConcentricVelocity ?? 1;
+  const rep1Avg  = stats[0]?.avgConcentricVelocity ?? 1;
   const lastStat = stats[stats.length - 1];
 
   // Whether any rep has a detected pause
@@ -152,19 +154,19 @@ export default function RepTable({ stats, calibration }: Props) {
           value={String(stats.length)}
         />
         <StatCard
-          label="Rep 1 Peak"
-          value={`${fmtV(rep1Peak)} ${unit}`}
+          label="Rep 1 Avg"
+          value={`${fmtV(rep1Avg)} ${unit}`}
           sub="concentric"
         />
         <StatCard
-          label="Final Peak"
-          value={`${fmtV(lastStat.peakConcentricVelocity)} ${unit}`}
+          label="Final Avg"
+          value={`${fmtV(lastStat.avgConcentricVelocity)} ${unit}`}
           sub="concentric"
         />
         <StatCard
           label="Total Drop"
           value={`${fmt(Math.abs(lastStat.percentSpeedDrop), 1)}%`}
-          sub="vs rep 1"
+          sub="vs rep 1 avg"
           valueClass={dropColour(lastStat.percentSpeedDrop)}
         />
       </div>

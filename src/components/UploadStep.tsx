@@ -337,13 +337,13 @@ export default function UploadStep({ onFileAccepted, onStartLive }: UploadStepPr
             {[
               {
                 step: "1",
-                title: "Upload",
-                desc: "Choose an MP4, MOV, M4V, or WebM video filmed side-on. Trim the video to include only the set.",
+                title: "Upload or Film",
+                desc: "Film side-on. If recorded prior, trim the video to include only the set for fastest results.",
               },
               {
                 step: "2",
                 title: "Mark bar + calibrate",
-                desc: "Tap the bar end to track it, then tap the top and bottom of the weight plate to set the scale.",
+                desc: "Weight plates will be auto-detected. If they are not, use the crosshairs to locate the plates/collar to track it, then locate the lines on top and bottom of the weight plate to set the scale.",
               },
               {
                 step: "3",

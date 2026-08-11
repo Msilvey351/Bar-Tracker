@@ -189,7 +189,7 @@ export default function App() {
           <div className="w-full flex flex-col items-center animate-in fade-in zoom-in-95">
             <div className="mb-6 w-full max-w-md bg-zinc-900 p-4 rounded-xl border border-zinc-800">
               <label className="block text-sm font-semibold text-white/80 mb-2">
-                What are you lifting?
+                What lift is this?
               </label>
               <select
                 value={liftType}
