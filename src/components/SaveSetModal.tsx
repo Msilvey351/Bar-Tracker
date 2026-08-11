@@ -144,7 +144,7 @@ export default function SaveSetModal({
       }
       setIsFetchingSet(false);
     }
-
+     
     fetchNextSetNumber();
   }, [exercise]); // Re-run if they change the exercise dropdown!
 
