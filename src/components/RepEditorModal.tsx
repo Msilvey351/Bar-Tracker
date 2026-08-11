@@ -96,17 +96,27 @@ export default function RepEditorModal({ file, vFrames, repStats, onClose, onSav
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/90 backdrop-blur-sm p-2 sm:p-6 animate-in fade-in">
+    // Outer overlay: prevents background scrolling and perfectly centers the modal
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-sm p-4 animate-in fade-in">
+      
+      {/* 
+        Modal Container: 
+        max-h-[90vh] ensures it never goes off screen.
+        flex-col ensures children stack correctly.
+      */}
       <div className="w-full max-w-2xl bg-zinc-900 border border-zinc-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
         
-        {/* Header */}
-        <div className="px-4 py-3 border-b border-white/5 flex justify-between items-center bg-zinc-950">
+        {/* Header (Fixed Height) */}
+        <div className="shrink-0 px-4 py-3 border-b border-white/5 flex justify-between items-center bg-zinc-950">
           <h2 className="font-bold text-lg text-white">Edit Reps</h2>
-          <button onClick={onClose} className="text-white/40 hover:text-white">✕</button>
+          <button onClick={onClose} className="text-white/40 hover:text-white p-2">✕</button>
         </div>
 
-        {/* Video Player */}
-        <div className="relative w-full aspect-video bg-black flex items-center justify-center">
+        {/* 
+          Video Player Area (Flexible, but with a hard max-height) 
+          This prevents vertical videos from pushing the controls off-screen!
+        */}
+        <div className="shrink-0 w-full bg-black flex items-center justify-center" style={{ maxHeight: "35vh" }}>
           {url && (
             <video
               ref={videoRef}
@@ -115,15 +125,17 @@ export default function RepEditorModal({ file, vFrames, repStats, onClose, onSav
               onTimeUpdate={handleTimeUpdate}
               onLoadedMetadata={handleLoadedMetadata}
               onEnded={() => setPlaying(false)}
-              className="max-w-full max-h-full"
+              className="max-w-full max-h-full object-contain"
+              style={{ maxHeight: "35vh" }}
             />
           )}
         </div>
 
-        {/* Scrubber & Controls */}
-        <div className="p-4 bg-zinc-950 border-b border-white/5 space-y-4">
+        {/* Scrubber & Controls (Fixed Height) */}
+        <div className="shrink-0 p-4 bg-zinc-950 border-y border-white/5 space-y-4">
+          {/* Slider */}
           <div className="flex items-center gap-3">
-            <span className="text-xs text-white/50 font-mono w-10">{currentTime.toFixed(2)}s</span>
+            <span className="text-xs text-white/50 font-mono w-10 text-right">{currentTime.toFixed(2)}s</span>
             <input
               type="range"
               min={0}
@@ -131,24 +143,29 @@ export default function RepEditorModal({ file, vFrames, repStats, onClose, onSav
               step={0.01}
               value={currentTime}
               onChange={(e) => scrub(parseFloat(e.target.value))}
-              className="flex-1 accent-orange-500"
+              className="flex-1 accent-orange-500 cursor-ew-resize"
             />
             <span className="text-xs text-white/50 font-mono w-10">{duration.toFixed(2)}s</span>
           </div>
 
-          <div className="flex justify-center gap-2">
-            <button onClick={() => nudge(-0.1)} className="px-3 py-1.5 bg-white/5 hover:bg-white/10 rounded-lg text-xs font-mono">-0.1s</button>
-            <button onClick={() => nudge(-0.03)} className="px-3 py-1.5 bg-white/5 hover:bg-white/10 rounded-lg text-xs font-mono">-1 frame</button>
-            <button onClick={togglePlay} className="px-6 py-1.5 bg-orange-500 hover:bg-orange-600 text-white rounded-lg font-bold w-24">
+          {/* Nudge Buttons */}
+          <div className="flex justify-center gap-2 overflow-x-auto pb-1 scrollbar-hide">
+            <button onClick={() => nudge(-0.1)} className="shrink-0 px-3 py-1.5 bg-white/5 hover:bg-white/10 rounded-lg text-xs font-mono">-0.1s</button>
+            <button onClick={() => nudge(-0.03)} className="shrink-0 px-3 py-1.5 bg-white/5 hover:bg-white/10 rounded-lg text-xs font-mono">-1 frame</button>
+            <button onClick={togglePlay} className="shrink-0 px-6 py-1.5 bg-orange-500 hover:bg-orange-600 text-white rounded-lg font-bold w-24">
               {playing ? "Pause" : "Play"}
             </button>
-            <button onClick={() => nudge(0.03)} className="px-3 py-1.5 bg-white/5 hover:bg-white/10 rounded-lg text-xs font-mono">+1 frame</button>
-            <button onClick={() => nudge(0.1)} className="px-3 py-1.5 bg-white/5 hover:bg-white/10 rounded-lg text-xs font-mono">+0.1s</button>
+            <button onClick={() => nudge(0.03)} className="shrink-0 px-3 py-1.5 bg-white/5 hover:bg-white/10 rounded-lg text-xs font-mono">+1 frame</button>
+            <button onClick={() => nudge(0.1)} className="shrink-0 px-3 py-1.5 bg-white/5 hover:bg-white/10 rounded-lg text-xs font-mono">+0.1s</button>
           </div>
         </div>
 
-        {/* Rep List */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-zinc-900">
+        {/* Rep List (Scrollable Area) */}
+        <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-zinc-900 min-h-0">
+          {reps.length === 0 && (
+            <p className="text-center text-white/40 text-sm py-4">No reps tracked yet. Add one below!</p>
+          )}
+
           {reps.map((rep, idx) => (
             <div key={rep.id} className="bg-white/5 border border-white/10 rounded-xl p-3 flex flex-col gap-3">
               <div className="flex justify-between items-center">
@@ -161,7 +178,7 @@ export default function RepEditorModal({ file, vFrames, repStats, onClose, onSav
                   <span className="text-[10px] text-white/40 uppercase">Start (Top)</span>
                   <button
                     onClick={() => updateRep(rep.id, "start", currentTime)}
-                    className="w-full py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg text-xs font-mono text-blue-400"
+                    className="w-full py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg text-xs font-mono text-blue-400 transition-colors"
                   >
                     {rep.start.toFixed(2)}s
                   </button>
@@ -171,7 +188,7 @@ export default function RepEditorModal({ file, vFrames, repStats, onClose, onSav
                   <span className="text-[10px] text-white/40 uppercase">Bottom</span>
                   <button
                     onClick={() => updateRep(rep.id, "bottom", currentTime)}
-                    className="w-full py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg text-xs font-mono text-purple-400"
+                    className="w-full py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg text-xs font-mono text-purple-400 transition-colors"
                   >
                     {rep.bottom.toFixed(2)}s
                   </button>
@@ -181,7 +198,7 @@ export default function RepEditorModal({ file, vFrames, repStats, onClose, onSav
                   <span className="text-[10px] text-white/40 uppercase">End (Top)</span>
                   <button
                     onClick={() => updateRep(rep.id, "end", currentTime)}
-                    className="w-full py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg text-xs font-mono text-orange-400"
+                    className="w-full py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg text-xs font-mono text-orange-400 transition-colors"
                   >
                     {rep.end.toFixed(2)}s
                   </button>
@@ -195,11 +212,11 @@ export default function RepEditorModal({ file, vFrames, repStats, onClose, onSav
           </button>
         </div>
 
-        {/* Footer Actions */}
-        <div className="p-4 border-t border-white/5 bg-zinc-950">
+        {/* Footer Actions (Fixed Height) */}
+        <div className="shrink-0 p-4 border-t border-white/5 bg-zinc-950">
           <button
             onClick={() => onSave(reps)}
-            className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl shadow-lg transition-all hover:-translate-y-0.5"
+            className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl shadow-lg transition-transform active:scale-[0.98]"
           >
             Save & Recalculate 🚀
           </button>
