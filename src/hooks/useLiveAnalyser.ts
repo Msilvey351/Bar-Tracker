@@ -43,10 +43,16 @@ export function useLiveAnalyser() {
   const [error, setError] = useState<string | null>(null);
   const [currentPoint, setCurrentPoint] = useState<Point | null>(null);
   const [recordedVideoBlob, setRecordedVideoBlob] = useState<Blob | null>(null);
-  
-  // ✨ NEW: State to hold the live velocity for the UI
   const [liveVelocity, setLiveVelocity] = useState<number | null>(null);
   
+  // ✨ NEW: Audio Toggle State
+  const [audioEnabled, setAudioEnabled] = useState(true);
+  const audioEnabledRef = useRef(true); // Ref so the tracking loop doesn't get stale closures
+  
+  useEffect(() => {
+    audioEnabledRef.current = audioEnabled;
+  }, [audioEnabled]);
+
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const workerRef = useRef<Worker | null>(null);
   const framesRef = useRef<FrameResult[]>([]);
@@ -120,13 +126,12 @@ export function useLiveAnalyser() {
     }
   }, [stream]);
 
-  // ✨ UPDATED: Accept plateHeightPx so we can calculate real m/s live!
   const startTracking = async (seedX: number, seedY: number, plateHeightPx?: number) => {
     const video = videoRef.current;
     if (!video || !workerRef.current) return;
 
-    // 🔥 AUDIO UNLOCK HACK: Play a silent utterance immediately on tap
-    if ('speechSynthesis' in window) {
+    // 🔥 AUDIO UNLOCK HACK: Play a silent utterance immediately on tap (if enabled)
+    if (audioEnabledRef.current && 'speechSynthesis' in window) {
       const silent = new SpeechSynthesisUtterance("");
       window.speechSynthesis.speak(silent);
     }
@@ -144,7 +149,7 @@ export function useLiveAnalyser() {
     framesRef.current = [];
     setIsTracking(true);
     isTrackingRef.current = true;
-    setLiveVelocity(null); // Reset live velocity
+    setLiveVelocity(null);
 
     const videoWidth = video.videoWidth;
     const videoHeight = video.videoHeight;
@@ -170,7 +175,6 @@ export function useLiveAnalyser() {
     const startTime = performance.now();
     let frameIndex = 0;
 
-    // ✨ LIVE REP DETECTION VARIABLES
     let isLifting = false;
     let concentricStartY = 0;
     let concentricStartTime = 0;
@@ -200,7 +204,6 @@ export function useLiveAnalyser() {
         position: realPoint,
       });
 
-      // ✨ LIVE HEURISTIC MATH (Only runs if we have a calibrated plate height)
       if (pxPerM) {
         recentYs.push(realPoint.y);
         recentTimes.push(timeSeconds);
@@ -214,30 +217,27 @@ export function useLiveAnalyser() {
           const oldestY = recentYs[0];
           const dt = timeSeconds - recentTimes[0];
 
-          const velocityPx = (oldestY - smoothY) / dt; // positive means moving UP
+          const velocityPx = (oldestY - smoothY) / dt; 
           const velocityM = velocityPx / pxPerM;
 
           if (!isLifting && velocityM > 0.15) { 
-            // Bar moving UP faster than 0.15m/s (Concentric Phase Started)
             isLifting = true;
             concentricStartY = realPoint.y;
             concentricStartTime = timeSeconds;
           } else if (isLifting && velocityM < 0.05) { 
-            // Bar stopped moving UP (Concentric Phase Ended)
             isLifting = false;
             const distM = (concentricStartY - realPoint.y) / pxPerM;
             const durS = timeSeconds - concentricStartTime;
             
-            // Validate it was a real rep (moved > 15cm and took > 0.2s)
             if (distM > 0.15 && durS > 0.2) {
               const avgVel = distM / durS;
               setLiveVelocity(avgVel);
 
-              // 🗣️ TEXT TO SPEECH CALLOUT
-              if ('speechSynthesis' in window) {
-                window.speechSynthesis.cancel(); // kill any overlapping speech
+              // ✨ TEXT TO SPEECH CALLOUT (Checks the new toggle state!)
+              if (audioEnabledRef.current && 'speechSynthesis' in window) {
+                window.speechSynthesis.cancel(); 
                 const utterance = new SpeechSynthesisUtterance(avgVel.toFixed(2));
-                utterance.rate = 1.1; // Make it snappy
+                utterance.rate = 1.1; 
                 window.speechSynthesis.speak(utterance);
               }
             }
@@ -283,7 +283,9 @@ export function useLiveAnalyser() {
     error,
     currentPoint,
     recordedVideoBlob,
-    liveVelocity, // ✨ EXPORT LIVE VELOCITY
+    liveVelocity,
+    audioEnabled,    // ✨ Export state
+    setAudioEnabled, // ✨ Export setter
     startCamera,
     stopCamera,
     startTracking,
