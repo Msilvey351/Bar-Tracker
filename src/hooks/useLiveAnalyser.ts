@@ -150,7 +150,7 @@ export function useLiveAnalyser() {
     
     // ✨ Y-OFFSET FIX: Seed slightly above the dark hole!
     const yOffset = videoHeight * 0.05; 
-    let trackerPoint = { x: seedX * scale, y: (seedY - yOffset) * scale };
+    let trackerPoint = { x: seedX * scale, y: seedY * scale };
     
     await workerSend({ type: "seed", x: trackerPoint.x, y: trackerPoint.y, imageData: firstImage }, "ack", [firstImage.data.buffer]);
 
