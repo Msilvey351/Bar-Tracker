@@ -6,7 +6,6 @@ import type { FrameResult, Point } from "@/types";
 const SCALED_WIDTH = 360;
 const SMOOTHING_WINDOW = 3;
 
-
 // ✨ Add these two smoothing functions
 function medianOf(values: number[]): number {
   if (!values.length) return 0;
@@ -40,6 +39,7 @@ const isMobile =
 
 export function useLiveAnalyser() {
   const [stream, setStream] = useState<MediaStream | null>(null);
+  const [facingMode, setFacingMode] = useState<"environment" | "user">("environment"); // ✨ NEW
   const [isTracking, setIsTracking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [currentPoint, setCurrentPoint] = useState<Point | null>(null);
@@ -91,16 +91,28 @@ export function useLiveAnalyser() {
     []
   );
 
-  const startCamera = async () => {
+  // ✨ NEW: Accepts mode and safely stops old stream
+  const startCamera = async (mode: "environment" | "user" = "environment") => {
     try {
+      setStream((prev) => {
+        if (prev) prev.getTracks().forEach((t) => t.stop());
+        return null;
+      });
+
       const mediaStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } },
+        video: { facingMode: mode, width: { ideal: 1280 }, height: { ideal: 720 } },
         audio: false,
       });
       setStream(mediaStream);
+      setFacingMode(mode);
     } catch (e) {
       setError("Could not access camera. Please check permissions.");
     }
+  };
+
+  // ✨ NEW: Toggle function
+  const toggleCamera = () => {
+    startCamera(facingMode === "environment" ? "user" : "environment");
   };
 
   const stopCamera = useCallback(() => {
@@ -228,5 +240,6 @@ export function useLiveAnalyser() {
     stopCamera,
     startTracking,
     stopTracking,
+    toggleCamera, // ✨ NEW: export the function
   };
 }

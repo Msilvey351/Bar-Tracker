@@ -29,6 +29,7 @@ export function LiveTracker({ onSetComplete, onCancel }: LiveTrackerProps) {
     stopCamera,
     startTracking,
     stopTracking,
+    toggleCamera, // ✨ NEW: pull this from the hook
   } = useLiveAnalyser();
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -202,6 +203,21 @@ export function LiveTracker({ onSetComplete, onCancel }: LiveTrackerProps) {
           muted
           className="absolute inset-0 w-full h-full object-cover pointer-events-none"
         />
+
+        {/* ✨ NEW: Flip Camera Button */}
+        {!isTracking && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation(); // Prevents dragging lines by mistake
+              toggleCamera();
+            }}
+            className="absolute top-4 right-4 z-30 w-10 h-10 bg-black/50 hover:bg-black/70 backdrop-blur-md border border-white/10 rounded-full flex items-center justify-center text-white shadow-lg transition-all"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+          </button>
+        )}
 
         {/* AI Bounding Box Overlay */}
         {!isTracking && !isManualMode && aiBox && videoRef.current && (
