@@ -16,7 +16,7 @@ export default function VideoPlayback({ file, result, vFrames }: Props) {
   
   // ── EXPORT REFS ────────────────────────────────────────────────────────────
   const exportCanvasRef = useRef<HTMLCanvasElement>(null);
-  const isExportingRef = useRef(false); // Used in the requestAnimationFrame loop
+  const isExportingRef = useRef(false); 
   const [isExporting, setIsExporting] = useState(false);
 
   const animRef = useRef<number>(0);
@@ -25,6 +25,9 @@ export default function VideoPlayback({ file, result, vFrames }: Props) {
   const [playing, setPlaying] = useState(false);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  
+  // To perfectly hug the video and prevent letterboxing offset
+  const [aspectRatio, setAspectRatio] = useState<number | null>(null);
 
   const { draw } = useCanvasOverlay(result, vFrames);
 
@@ -38,7 +41,6 @@ export default function VideoPlayback({ file, result, vFrames }: Props) {
     setPlaying(false);
 
     let cancelled = false;
-
     const url = URL.createObjectURL(file);
     urlRef.current = url;
 
@@ -49,7 +51,12 @@ export default function VideoPlayback({ file, result, vFrames }: Props) {
     video.src = url;
 
     const onCanPlay = () => {
-      if (!cancelled) setReady(true);
+      if (!cancelled) {
+        setReady(true);
+        if (videoRef.current) {
+          setAspectRatio(videoRef.current.videoWidth / videoRef.current.videoHeight);
+        }
+      }
     };
 
     const onError = (e: Event) => {
@@ -57,14 +64,8 @@ export default function VideoPlayback({ file, result, vFrames }: Props) {
       const ve = e.target as HTMLVideoElement;
       const code = ve.error?.code ?? 0;
       const msg = ve.error?.message ?? "unknown";
-      
       console.warn(`Playback Video Error ${code}: ${msg}`);
-      
-      if (code === 4) {
-          setError(`Video playback not supported (Code 4)`);
-      } else {
-          setError(`Video error ${code}: ${msg}`);
-      }
+      setError(`Video error ${code}: ${msg}`);
     };
 
     video.addEventListener("loadedmetadata", onCanPlay, { once: true });
@@ -91,17 +92,26 @@ export default function VideoPlayback({ file, result, vFrames }: Props) {
     const fontSizeSmall = Math.max(Math.floor(width * 0.025), 12);
 
     ctx.textAlign = "right";
-    ctx.textBaseline = "bottom";
+    ctx.textBaseline = "top"; // Moved to TOP so player controls don't hide it
+
+    // Add shadow so it's readable on bright walls/lights
+    ctx.shadowColor = "rgba(0,0,0,0.8)";
+    ctx.shadowBlur = 10;
+    ctx.shadowOffsetX = 2;
+    ctx.shadowOffsetY = 2;
     
     // Draw "VELOCITY"
     ctx.font = `italic 900 ${fontSizeLarge}px sans-serif`;
-    ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
-    ctx.fillText("VELOCITY", width - padding, height - padding);
+    ctx.fillStyle = "rgba(255, 255, 255, 0.95)";
+    ctx.fillText("VELOCITY", width - padding, padding);
 
     // Draw "TRACKED USING"
     ctx.font = `600 ${fontSizeSmall}px sans-serif`;
-    ctx.fillStyle = "rgba(255, 255, 255, 0.6)";
-    ctx.fillText("TRACKED USING", width - padding, height - padding - fontSizeLarge);
+    ctx.fillStyle = "rgba(255, 255, 255, 0.7)";
+    ctx.fillText("TRACKED USING", width - padding, padding + fontSizeLarge + 5);
+
+    // Reset shadow for other drawings
+    ctx.shadowColor = "transparent";
   };
 
   // ── Canvas overlay & Recording loop ────────────────────────────────────────
@@ -112,15 +122,12 @@ export default function VideoPlayback({ file, result, vFrames }: Props) {
 
     const loop = () => {
       if (video.videoWidth > 0) {
-        
-        // 1. Draw the visual tracking overlay for the user
         if (canvas.width !== video.videoWidth) {
           canvas.width = video.videoWidth;
           canvas.height = video.videoHeight;
         }
         draw(canvas, video.currentTime);
 
-        // 2. If we are exporting, composite everything into the hidden recording canvas!
         if (isExportingRef.current && exportCanvasRef.current) {
           const eCanvas = exportCanvasRef.current;
           
@@ -131,11 +138,8 @@ export default function VideoPlayback({ file, result, vFrames }: Props) {
           
           const eCtx = eCanvas.getContext('2d');
           if (eCtx) {
-              // Draw the raw video frame
               eCtx.drawImage(video, 0, 0, eCanvas.width, eCanvas.height);
-              // Draw the tracking dots we just generated
               eCtx.drawImage(canvas, 0, 0, eCanvas.width, eCanvas.height);
-              // Draw the VELOCITY watermark
               drawWatermark(eCtx, eCanvas.width, eCanvas.height);
           }
         }
@@ -154,26 +158,19 @@ export default function VideoPlayback({ file, result, vFrames }: Props) {
     if (!video || !eCanvas) return;
 
     setIsExporting(true);
-    isExportingRef.current = true; // Sync ref for the rAF loop
+    isExportingRef.current = true;
 
     try {
-      // Reset video to start
       video.pause();
       video.currentTime = 0;
-
-      // Allow a split second for the canvas to resize
       await new Promise((resolve) => setTimeout(resolve, 100)); 
 
-      // Start capturing the canvas stream at 30fps
       const stream = eCanvas.captureStream(30); 
-      
-      // Safari prefers mp4, Chrome prefers webm. Try mp4 first.
       let mimeType = 'video/webm';
       if (MediaRecorder.isTypeSupported('video/mp4')) {
           mimeType = 'video/mp4';
       }
 
-      // High quality bitrate
       const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 2500000 });
       const chunks: Blob[] = [];
 
@@ -200,16 +197,12 @@ export default function VideoPlayback({ file, result, vFrames }: Props) {
       };
 
       recorder.start();
-
-      // Stop recording exactly when the video finishes playing
       const handleEnd = () => {
           recorder.stop();
           video.removeEventListener('ended', handleEnd);
       };
-      
       video.addEventListener('ended', handleEnd);
       
-      // Start playback to drive the recording
       await video.play();
       setPlaying(true);
 
@@ -222,12 +215,10 @@ export default function VideoPlayback({ file, result, vFrames }: Props) {
     }
   };
 
-  // ── Controls ───────────────────────────────────────────────────────────────
   const togglePlay = async () => {
-    if (isExporting) return; // Block interaction during export
+    if (isExporting) return; 
     const video = videoRef.current;
     if (!video) return;
-
     try {
       if (video.paused) {
         await video.play();
@@ -256,79 +247,74 @@ export default function VideoPlayback({ file, result, vFrames }: Props) {
 
   return (
     <div className="flex flex-col gap-3">
+      {/* 
+        This container forces the Canvas to exactly match the video size 
+        No letterboxing, no offset dots!
+      */}
       <div
-        className="relative rounded-xl overflow-hidden border border-white/10 bg-black"
-        style={{ minHeight: "200px", maxHeight: "65vh" }}
+        className="w-full flex justify-center bg-black rounded-xl overflow-hidden border border-white/10"
+        style={{ height: "65vh", minHeight: "300px" }}
       >
-        {/* Loading state */}
-        {!ready && !error && (
-          <div className="absolute inset-0 flex items-center justify-center z-10">
-            <div className="flex flex-col items-center gap-2">
-              <div className="w-6 h-6 border-2 border-orange-500 border-t-transparent rounded-full animate-spin" />
-              <span className="text-white/40 text-sm">Loading video…</span>
-            </div>
-          </div>
-        )}
-
-        {/* Error state */}
-        {error && (
-          <div className="absolute inset-0 flex items-center justify-center z-10 px-6 bg-black/80">
-            <div className="text-center">
-              <p className="text-red-400 text-sm mb-3 font-semibold">{error}</p>
-              <p className="text-white/40 text-xs">
-                The analysis was successful, but your browser cannot play this specific video format back.
-              </p>
-            </div>
-          </div>
-        )}
-
-        {/* Recording Overlay */}
-        {isExporting && (
-          <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-black/70 backdrop-blur-sm">
-             <div className="w-10 h-10 border-4 border-red-500 border-t-transparent rounded-full animate-spin mb-4" />
-             <p className="text-white font-bold animate-pulse text-lg">Generating Video...</p>
-             <p className="text-white/60 text-sm mt-1">Please wait while the video plays</p>
-          </div>
-        )}
-
-        {/* Video element */}
-        <video
-          ref={videoRef}
-          onEnded={onEnded}
-          playsInline
-          muted
-          className="w-full block"
-          style={{ display: ready && !error ? "block" : "none",
-            maxHeight: "65vh",
-            objectFit: "contain",
-          }}
-        />
-
-        {/* Visual Canvas overlay */}
-        <canvas
-          ref={canvasRef}
-          className="absolute inset-0 w-full h-full"
-          style={{ pointerEvents: "none", display: error ? "none" : "block" }}
-        />
-        
-        {/* Hidden Export Canvas (Used for MediaRecorder) */}
-        <canvas ref={exportCanvasRef} className="hidden" />
-
-        {/* Tap to play overlay when paused */}
-        {ready && !playing && !error && !isExporting && (
-          <button
-            onClick={togglePlay}
-            className="absolute inset-0 flex items-center justify-center bg-black/20 z-10"
+        {aspectRatio && (
+          <div
+            className="relative h-full flex justify-center items-center"
+            style={{ aspectRatio: `${aspectRatio}`, maxWidth: "100%" }}
           >
-            <div className="w-16 h-16 rounded-full bg-orange-500/90 flex items-center justify-center shadow-lg">
-              <span className="text-white text-2xl ml-1">▶</span>
-            </div>
-          </button>
+            {/* Video element */}
+            <video
+              ref={videoRef}
+              onEnded={onEnded}
+              playsInline
+              muted
+              className="w-full h-full object-contain block"
+              style={{ display: ready && !error ? "block" : "none" }}
+            />
+
+            {/* Visual Canvas overlay */}
+            <canvas
+              ref={canvasRef}
+              className="absolute inset-0 w-full h-full block"
+              style={{ pointerEvents: "none", display: error ? "none" : "block" }}
+            />
+            
+            {/* Hidden Export Canvas */}
+            <canvas ref={exportCanvasRef} className="hidden" />
+
+            {/* Loading state */}
+            {!ready && !error && (
+              <div className="absolute inset-0 flex items-center justify-center z-10 bg-black">
+                <div className="flex flex-col items-center gap-2">
+                  <div className="w-6 h-6 border-2 border-orange-500 border-t-transparent rounded-full animate-spin" />
+                  <span className="text-white/40 text-sm">Loading video…</span>
+                </div>
+              </div>
+            )}
+
+            {/* Tap to play overlay when paused */}
+            {ready && !playing && !error && !isExporting && (
+              <button
+                onClick={togglePlay}
+                className="absolute inset-0 flex items-center justify-center bg-black/20 z-10"
+              >
+                <div className="w-16 h-16 rounded-full bg-orange-500/90 flex items-center justify-center shadow-lg">
+                  <span className="text-white text-2xl ml-1">▶</span>
+                </div>
+              </button>
+            )}
+
+            {/* Recording Overlay */}
+            {isExporting && (
+              <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-black/80 backdrop-blur-md">
+                 <div className="w-10 h-10 border-4 border-red-500 border-t-transparent rounded-full animate-spin mb-4" />
+                 <p className="text-white font-bold animate-pulse text-lg">Generating Video...</p>
+              </div>
+            )}
+          </div>
         )}
       </div>
 
       {/* Controls */}
-      <div className="flex flex-wrap gap-3 justify-center">
+      <div className="flex flex-wrap gap-3 justify-center mt-2">
         <button
           onClick={togglePlay}
           disabled={!ready || !!error || isExporting}
