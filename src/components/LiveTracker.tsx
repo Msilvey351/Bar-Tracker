@@ -29,7 +29,8 @@ export function LiveTracker({ onSetComplete, onCancel }: LiveTrackerProps) {
     stopCamera,
     startTracking,
     stopTracking,
-    toggleCamera, // ✨ NEW: pull this from the hook
+    toggleCamera, 
+    liveVelocity, // ✨ Pulled from the hook for the UI
   } = useLiveAnalyser();
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -141,10 +142,10 @@ export function LiveTracker({ onSetComplete, onCancel }: LiveTrackerProps) {
       
       const manualPlateHeightPx = Math.abs(by - ty);
       setFinalPlateHeight(manualPlateHeightPx);
-      startTracking(cx, cy);
+      startTracking(cx, cy, manualPlateHeightPx);
     } else if (aiBox) {
       // AI Mode Start
-      startTracking(aiBox.x, aiBox.y);
+      startTracking(aiBox.x, aiBox.y, aiBox.height);
     }
   };
 
@@ -204,7 +205,23 @@ export function LiveTracker({ onSetComplete, onCancel }: LiveTrackerProps) {
           className="absolute inset-0 w-full h-full object-cover pointer-events-none"
         />
 
-        {/* ✨ NEW: Flip Camera Button */}
+        {/* ✨ NEW: Live Velocity Overlay! (Pops up when a rep finishes) */}
+        {isTracking && liveVelocity !== null && (
+          <div 
+            key={liveVelocity} // The key forces React to re-animate on every new rep
+            className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none z-40 animate-in zoom-in fade-in duration-300"
+          >
+            <div className="bg-black/40 backdrop-blur-sm px-6 py-4 rounded-3xl border border-white/20 shadow-2xl flex flex-col items-center">
+              <span className="text-white/60 text-sm font-bold uppercase tracking-widest mb-1">Rep Speed</span>
+              <span className="text-6xl font-black text-white tabular-nums drop-shadow-md">
+                {liveVelocity.toFixed(2)}
+              </span>
+              <span className="text-white/50 text-xl font-bold mt-1">m/s</span>
+            </div>
+          </div>
+        )}
+
+        {/* Flip Camera Button */}
         {!isTracking && (
           <button
             onClick={(e) => {

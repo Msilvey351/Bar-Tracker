@@ -6,7 +6,6 @@ import type { FrameResult, Point } from "@/types";
 const SCALED_WIDTH = 360;
 const SMOOTHING_WINDOW = 3;
 
-// ✨ Add these two smoothing functions
 function medianOf(values: number[]): number {
   if (!values.length) return 0;
   const sorted = [...values].sort((a, b) => a - b);
@@ -39,18 +38,19 @@ const isMobile =
 
 export function useLiveAnalyser() {
   const [stream, setStream] = useState<MediaStream | null>(null);
-  const [facingMode, setFacingMode] = useState<"environment" | "user">("environment"); // ✨ NEW
+  const [facingMode, setFacingMode] = useState<"environment" | "user">("environment");
   const [isTracking, setIsTracking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [currentPoint, setCurrentPoint] = useState<Point | null>(null);
   const [recordedVideoBlob, setRecordedVideoBlob] = useState<Blob | null>(null);
   
+  // ✨ NEW: State to hold the live velocity for the UI
+  const [liveVelocity, setLiveVelocity] = useState<number | null>(null);
+  
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const workerRef = useRef<Worker | null>(null);
   const framesRef = useRef<FrameResult[]>([]);
   const loopRef = useRef<number | null>(null);
-  
-  // ✨ FIX 1: We use a Ref for the loop check so it never goes stale!
   const isTrackingRef = useRef(false);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -91,7 +91,6 @@ export function useLiveAnalyser() {
     []
   );
 
-  // ✨ NEW: Accepts mode and safely stops old stream
   const startCamera = async (mode: "environment" | "user" = "environment") => {
     try {
       setStream((prev) => {
@@ -110,7 +109,6 @@ export function useLiveAnalyser() {
     }
   };
 
-  // ✨ NEW: Toggle function
   const toggleCamera = () => {
     startCamera(facingMode === "environment" ? "user" : "environment");
   };
@@ -122,27 +120,31 @@ export function useLiveAnalyser() {
     }
   }, [stream]);
 
-  const startTracking = async (seedX: number, seedY: number) => {
+  // ✨ UPDATED: Accept plateHeightPx so we can calculate real m/s live!
+  const startTracking = async (seedX: number, seedY: number, plateHeightPx?: number) => {
     const video = videoRef.current;
     if (!video || !workerRef.current) return;
+
+    // 🔥 AUDIO UNLOCK HACK: Play a silent utterance immediately on tap
+    if ('speechSynthesis' in window) {
+      const silent = new SpeechSynthesisUtterance("");
+      window.speechSynthesis.speak(silent);
+    }
 
     if (stream) {
       recordedChunksRef.current = [];
       const mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
-      
       mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          recordedChunksRef.current.push(event.data);
-        }
+        if (event.data.size > 0) recordedChunksRef.current.push(event.data);
       };
-
       mediaRecorderRef.current = mediaRecorder;
       mediaRecorder.start(100); 
     }
 
     framesRef.current = [];
     setIsTracking(true);
-    isTrackingRef.current = true; // Set the ref to true!
+    isTrackingRef.current = true;
+    setLiveVelocity(null); // Reset live velocity
 
     const videoWidth = video.videoWidth;
     const videoHeight = video.videoHeight;
@@ -160,7 +162,6 @@ export function useLiveAnalyser() {
     ctx.drawImage(video, 0, 0, SCALED_WIDTH, scaledH);
     const firstImage = ctx.getImageData(0, 0, SCALED_WIDTH, scaledH);
     
-    // ✨ Y-OFFSET FIX: Seed slightly above the dark hole!
     const yOffset = videoHeight * 0.05; 
     let trackerPoint = { x: seedX * scale, y: seedY * scale };
     
@@ -169,8 +170,15 @@ export function useLiveAnalyser() {
     const startTime = performance.now();
     let frameIndex = 0;
 
+    // ✨ LIVE REP DETECTION VARIABLES
+    let isLifting = false;
+    let concentricStartY = 0;
+    let concentricStartTime = 0;
+    const recentYs: number[] = [];
+    const recentTimes: number[] = [];
+    const pxPerM = plateHeightPx ? plateHeightPx / 0.45 : null;
+
     const trackLoop = async () => {
-      // ✨ Use the Ref so it actually stays alive!
       if (!isTrackingRef.current && framesRef.current.length > 0) return; 
       
       ctx.drawImage(video, 0, 0, SCALED_WIDTH, scaledH);
@@ -183,7 +191,6 @@ export function useLiveAnalyser() {
       }
 
       const timeSeconds = (performance.now() - startTime) / 1000;
-      
       const realPoint = { x: trackerPoint.x / scale, y: trackerPoint.y / scale };
       setCurrentPoint(realPoint);
 
@@ -193,6 +200,51 @@ export function useLiveAnalyser() {
         position: realPoint,
       });
 
+      // ✨ LIVE HEURISTIC MATH (Only runs if we have a calibrated plate height)
+      if (pxPerM) {
+        recentYs.push(realPoint.y);
+        recentTimes.push(timeSeconds);
+        if (recentYs.length > 5) {
+          recentYs.shift();
+          recentTimes.shift();
+        }
+
+        if (recentYs.length === 5) {
+          const smoothY = medianOf(recentYs);
+          const oldestY = recentYs[0];
+          const dt = timeSeconds - recentTimes[0];
+
+          const velocityPx = (oldestY - smoothY) / dt; // positive means moving UP
+          const velocityM = velocityPx / pxPerM;
+
+          if (!isLifting && velocityM > 0.15) { 
+            // Bar moving UP faster than 0.15m/s (Concentric Phase Started)
+            isLifting = true;
+            concentricStartY = realPoint.y;
+            concentricStartTime = timeSeconds;
+          } else if (isLifting && velocityM < 0.05) { 
+            // Bar stopped moving UP (Concentric Phase Ended)
+            isLifting = false;
+            const distM = (concentricStartY - realPoint.y) / pxPerM;
+            const durS = timeSeconds - concentricStartTime;
+            
+            // Validate it was a real rep (moved > 15cm and took > 0.2s)
+            if (distM > 0.15 && durS > 0.2) {
+              const avgVel = distM / durS;
+              setLiveVelocity(avgVel);
+
+              // 🗣️ TEXT TO SPEECH CALLOUT
+              if ('speechSynthesis' in window) {
+                window.speechSynthesis.cancel(); // kill any overlapping speech
+                const utterance = new SpeechSynthesisUtterance(avgVel.toFixed(2));
+                utterance.rate = 1.1; // Make it snappy
+                window.speechSynthesis.speak(utterance);
+              }
+            }
+          }
+        }
+      }
+
       frameIndex++;
       loopRef.current = requestAnimationFrame(trackLoop);
     };
@@ -200,8 +252,6 @@ export function useLiveAnalyser() {
     trackLoop();
   };
 
-  // ✨ FIX 2: Return a Promise so we can wait for the Blob to finish compiling!
-  // ✨ FIX: Apply the smoothing function to the raw frames!
   const stopTracking = (): Promise<{ frames: FrameResult[], blob: Blob | null }> => {
     return new Promise((resolve) => {
       setIsTracking(false);
@@ -214,15 +264,12 @@ export function useLiveAnalyser() {
           const finalBlob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
           setRecordedVideoBlob(finalBlob);
           stopCamera();
-          
-          // SMOOTH HERE
           const smoothedFrames = smoothPositions(framesRef.current);
           resolve({ frames: smoothedFrames, blob: finalBlob });
         };
         mediaRecorderRef.current.stop(); 
       } else {
         stopCamera();
-        // AND SMOOTH HERE
         const smoothedFrames = smoothPositions(framesRef.current);
         resolve({ frames: smoothedFrames, blob: null });
       }
@@ -236,10 +283,11 @@ export function useLiveAnalyser() {
     error,
     currentPoint,
     recordedVideoBlob,
+    liveVelocity, // ✨ EXPORT LIVE VELOCITY
     startCamera,
     stopCamera,
     startTracking,
     stopTracking,
-    toggleCamera, // ✨ NEW: export the function
+    toggleCamera, 
   };
 }
