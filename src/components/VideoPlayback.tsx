@@ -79,26 +79,37 @@ export default function VideoPlayback({ file, result, vFrames }: Props) {
 
   // ── Watermark Drawer ───────────────────────────────────────────────────────
   const drawWatermark = (ctx: CanvasRenderingContext2D, width: number, height: number) => {
-    const padding = width * 0.04;
-    const fontSizeLarge = Math.max(Math.floor(width * 0.07), 24);
-    const fontSizeSmall = Math.max(Math.floor(width * 0.025), 12);
+    // 1. Calculate a safe, consistent scale based on the SHORTEST edge of the video
+    const shortestEdge = Math.min(width, height);
+    
+    // 2. Set font sizes relative to the video resolution (e.g. ~5% of screen size)
+    const fontSizeLarge = Math.max(Math.floor(shortestEdge * 0.05), 18);
+    const fontSizeSmall = Math.max(Math.floor(shortestEdge * 0.02), 10);
+    
+    // 3. Keep it padded nicely away from the absolute edge of the video frame
+    const paddingX = shortestEdge * 0.04;
+    const paddingY = shortestEdge * 0.04;
 
     ctx.textAlign = "right";
     ctx.textBaseline = "top";
 
+    // Add a tight, dark shadow so it is readable on bright backgrounds
     ctx.shadowColor = "rgba(0,0,0,0.8)";
-    ctx.shadowBlur = 10;
+    ctx.shadowBlur = 8;
     ctx.shadowOffsetX = 2;
     ctx.shadowOffsetY = 2;
     
+    // Draw "VELOCITY"
     ctx.font = `italic 900 ${fontSizeLarge}px sans-serif`;
     ctx.fillStyle = "rgba(255, 255, 255, 0.95)";
-    ctx.fillText("VELOCITY", width - padding, padding);
+    ctx.fillText("VELOCITY", width - paddingX, paddingY);
 
+    // Draw "TRACKED USING" (placed directly under VELOCITY)
     ctx.font = `600 ${fontSizeSmall}px sans-serif`;
     ctx.fillStyle = "rgba(255, 255, 255, 0.7)";
-    ctx.fillText("TRACKED USING", width - padding, padding + fontSizeLarge + 5);
+    ctx.fillText("TRACKED USING", width - paddingX, paddingY + fontSizeLarge + 4);
 
+    // Reset shadow so it doesn't affect other canvas drawings
     ctx.shadowColor = "transparent";
   };
 
