@@ -8,11 +8,21 @@ import type {
 } from "@/types";
 
 // ─── Public options ───────────────────────────────────────────────────────────
+export interface ManualRep {
+  id?: string;
+  start: number;   // time of eccentric start
+  bottom: number;  // time of turnaround
+  end: number;     // time of concentric end
+}
+
+
 
 export interface AnalyseRepOptions {
   calibration?: CalibrationPoints | null;
   liftType?: LiftType;
+  manualReps?: ManualRep[];
 }
+
 
 // ─── Tuning ───────────────────────────────────────────────────────────────────
 
@@ -749,10 +759,46 @@ export function analyseReps(
   fps: number,
   options: AnalyseRepOptions = {}
 ): { vFrames: VelocityFrame[]; repStats: RepStats[] } {
-  const withVelocity = buildVelocityFrames(frames, fps, options.calibration);
-  const withReps = detectPhasesAndReps(withVelocity, options);
-  const filtered = filterAndRenumber(withReps, options);
-  const repStats = computeRepStats(filtered);
+  // 1. Always build the raw velocity arrays first
+  let withVelocity = buildVelocityFrames(frames, fps, options.calibration);
+  let repStats: RepStats[] = [];
 
-  return { vFrames: filtered, repStats };
+  if (options.manualReps && options.manualReps.length > 0) {
+    // 💥 MANUAL MODE 💥
+    // The user has told us EXACTLY where the reps are. 
+    // We ignore the heuristic guesser and force the frames to obey the user.
+    
+    // Sort manual reps chronologically just in case
+    const sortedReps = [...options.manualReps].sort((a, b) => a.start - b.start);
+    
+    withVelocity.forEach((f) => {
+      f.phase = "rest";
+      f.repIndex = null;
+    });
+
+    sortedReps.forEach((mRep, idx) => {
+      withVelocity.forEach((f) => {
+        if (f.timeSeconds >= mRep.start && f.timeSeconds < mRep.bottom) {
+          f.phase = "eccentric";
+          f.repIndex = idx;
+        } else if (f.timeSeconds >= mRep.bottom && f.timeSeconds <= mRep.end) {
+          f.phase = "concentric";
+          f.repIndex = idx;
+        }
+      });
+    });
+
+    // Because the user explicitly set these, we do NOT filter them out
+    // even if they don't meet the "MIN_RANGE" or "MIN_SPEED" requirements.
+    repStats = computeRepStats(withVelocity);
+
+  } else {
+    // 🤖 AI/HEURISTIC MODE 🤖
+    // The default behavior when first analyzing a video
+    const withReps = detectPhasesAndReps(withVelocity, options);
+    withVelocity = filterAndRenumber(withReps, options);
+    repStats = computeRepStats(withVelocity);
+  }
+
+  return { vFrames: withVelocity, repStats };
 }

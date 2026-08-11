@@ -10,6 +10,7 @@ import AuthModal from "./AuthModal";
 import SaveSetModal from "./SaveSetModal";
 import { useAuth } from "@/context/AuthContext";
 import { saveLiftTelemetry } from "@/lib/telemetry";
+import RepEditorModal, { ManualRep } from "@/components/RepEditorModal";
 
 interface Props {
   result: AnalysisResult;
@@ -32,16 +33,25 @@ export default function ResultsStep({
   const [showAuth, setShowAuth] = useState(false);
   const [showSave, setShowSave] = useState(false);
   const [savedDone, setSavedDone] = useState(false);
+  
+  // ── Manual Rep Editor State ────────────────────────────────────────────────
+  const [showEditor, setShowEditor] = useState(false);
+  // Fixed TS Error: Initialize as undefined instead of null
+  const [manualReps, setManualReps] = useState<ManualRep[] | undefined>(undefined); 
 
   const { user } = useAuth();
   const telemetrySent = useRef(false);
 
+  // ── Core Math (Reruns automatically if manualReps changes) ────────────────
   const { vFrames, repStats } = useMemo(
-    () => analyseReps(result.frames, result.fps, { calibration, liftType }),
-    [result, calibration, liftType]
+    () => {
+      return analyseReps(result.frames, result.fps, { calibration, liftType, manualReps });
+    },
+    [result, calibration, liftType, manualReps]
   );
 
   useEffect(() => {
+    // Only send telemetry on the INITIAL heuristic guess, not on every edit
     if (!telemetrySent.current && vFrames.length > 0) {
       saveLiftTelemetry(liftType, vFrames, repStats.length);
       telemetrySent.current = true;
@@ -54,24 +64,20 @@ export default function ResultsStep({
     { id: "playback", label: "Video Playback", icon: "🎬" },
   ];
 
-  // 📝 CSV EXPORT FUNCTION
+  // ── CSV EXPORT ─────────────────────────────────────────────────────────────
   const downloadCSV = () => {
     if (repStats.length === 0) return;
 
-    // 1. Create the CSV headers
     let csvContent = "Rep,Avg Concentric (m/s),Peak Concentric (m/s),Avg Eccentric (m/s),Concentric Time (s),Eccentric Time (s),Speed Drop (%)\n";
 
-    // 2. Loop through the stats and add rows
     repStats.forEach((rep) => {
       const drop = rep.percentSpeedDrop > 0 ? rep.percentSpeedDrop.toFixed(1) : "0.0";
       csvContent += `${rep.repNumber},${rep.avgConcentricVelocity.toFixed(2)},${rep.peakConcentricVelocity.toFixed(2)},${Math.abs(rep.avgEccentricVelocity).toFixed(2)},${rep.concentricDuration.toFixed(2)},${rep.eccentricDuration.toFixed(2)},${drop}%\n`;
     });
 
-    // 3. Create a Blob (a browser file object)
     const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
 
-    // 4. Create a hidden link and click it to trigger the download
     const link = document.createElement("a");
     link.href = url;
     const dateStr = new Date().toISOString().split("T")[0];
@@ -81,8 +87,15 @@ export default function ResultsStep({
     document.body.removeChild(link);
   };
 
+  // ── EDITOR HANDLER ─────────────────────────────────────────────────────────
+  const handleSaveEditor = (reps: ManualRep[]) => {
+    setManualReps(reps);
+    setShowEditor(false);
+    setView("table"); // Ensure we are on the table to see the new stats immediately
+  };
+
   return (
-    <div className="flex flex-col items-center gap-6 pb-12">
+    <div className="flex flex-col items-center gap-6 pb-12 animate-in fade-in zoom-in-95 duration-300">
       {/* Header */}
       <div className="text-center">
         <h2 className="text-2xl font-bold">Analysis Complete 🎉</h2>
@@ -128,8 +141,14 @@ export default function ResultsStep({
           <div className="flex flex-col gap-4">
             <RepTable stats={repStats} calibration={calibration} />
             
-            {/* CSV EXPORT BUTTON */}
-            <div className="flex justify-end">
+            {/* ACTION BUTTONS (Edit + CSV) */}
+            <div className="flex justify-end gap-3">
+              <button
+                onClick={() => setShowEditor(true)}
+                className="flex items-center gap-2 px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-white text-sm font-semibold rounded-lg border border-zinc-700 transition-colors"
+              >
+                <span>✏️</span> Edit Reps
+              </button>
               <button
                 onClick={downloadCSV}
                 className="flex items-center gap-2 px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-white text-sm font-semibold rounded-lg border border-zinc-700 transition-colors"
@@ -198,6 +217,17 @@ export default function ResultsStep({
             setShowSave(false);
             setSavedDone(true);
           }}
+        />
+      )}
+
+      {/* 💥 THE NEW REP EDITOR MODAL 💥 */}
+      {showEditor && (
+        <RepEditorModal
+          file={file}
+          vFrames={vFrames}
+          repStats={repStats}
+          onClose={() => setShowEditor(false)}
+          onSave={handleSaveEditor}
         />
       )}
     </div>
