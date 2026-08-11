@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
 import type { RepStats, LiftType, CalibrationPoints } from "@/types";
 
@@ -74,10 +74,13 @@ export default function SaveSetModal({
   onSaved,
 }: Props) {
   const [exercise, setExercise] = useState(defaultExercise(liftType));
+  const [setNumber, setSetNumber] = useState<number>(1); // <-- NEW STATE
   const [weightKg, setWeightKg] = useState<string>("");
   const [rpe, setRpe] = useState<string>("");
   const [notes, setNotes] = useState("");
+  
   const [loading, setLoading] = useState(false);
+  const [isFetchingSet, setIsFetchingSet] = useState(true); // Loading state for auto-set-number
   const [error, setError] = useState<string | null>(null);
 
   const isCalibrated = calibration !== null;
@@ -92,17 +95,58 @@ export default function SaveSetModal({
 
   const getRepRpe = (repNumber: number) => {
     if (finalRepRpe == null || !Number.isFinite(finalRepRpe)) return null;
-
     const totalReps = repStats.length;
     const repsBeforeLast = totalReps - repNumber;
     return finalRepRpe - repsBeforeLast;
   };
 
-  // 🔥 NEW: Convert RPE to RIR for easier math later
   const getRepRir = (repRpe: number | null) => {
     if (repRpe == null) return null;
     return 10 - repRpe; 
   };
+
+  // 🔥 NEW: Auto-detect what set number they are on for today's workout
+  // 🔥 NEW: Auto-detect what set number they are on for today's workout
+  useEffect(() => {
+    async function fetchNextSetNumber() {
+      setIsFetchingSet(true);
+      const supabase = createClient();
+      const { data: { user } } = await supabase.auth.getUser();
+      
+      if (!user) {
+        setIsFetchingSet(false);
+        return;
+      }
+
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      // 1. Find today's workout
+      const { data: workout } = await supabase
+        .from("workouts")
+        .select("id")
+        .gte("date", today.toISOString())
+        .order("date", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (workout) {
+        // 2. Safely count sets by just grabbing the IDs and checking the length
+        const { data: existingSets } = await supabase
+          .from("sets")
+          .select("id")
+          .eq("workout_id", workout.id)
+          .eq("exercise", exercise);
+
+        if (existingSets) {
+          setSetNumber(existingSets.length + 1);
+        }
+      }
+      setIsFetchingSet(false);
+    }
+
+    fetchNextSetNumber();
+  }, [exercise]); // Re-run if they change the exercise dropdown!
 
   const handleSave = async () => {
     setLoading(true);
@@ -110,9 +154,7 @@ export default function SaveSetModal({
 
     const supabase = createClient();
 
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+    const { data: { user } } = await supabase.auth.getUser();
 
     if (!user) {
       setError("Not signed in");
@@ -146,9 +188,7 @@ export default function SaveSetModal({
         .from("workouts")
         .insert({
           user_id: user.id,
-          title: `${today.toLocaleDateString("en-NZ", {
-            weekday: "long",
-          })} Workout`,
+          title: `${today.toLocaleDateString("en-NZ", { weekday: "long" })} Workout`,
           date: new Date().toISOString(),
         })
         .select("id")
@@ -159,7 +199,6 @@ export default function SaveSetModal({
         setLoading(false);
         return;
       }
-
       workoutId = newWorkout.id;
     }
 
@@ -168,6 +207,7 @@ export default function SaveSetModal({
       .insert({
         workout_id: workoutId,
         exercise,
+        set_number: setNumber, // <-- 🔥 NEW: Save the set number!
         weight_kg: weightKg ? parseFloat(weightKg) : null,
         rpe: finalRepRpe,
         velocity_unit: velocityUnit,
@@ -189,18 +229,14 @@ export default function SaveSetModal({
       return {
         set_id: newSet.id,
         rep_number: rep.repNumber,
-
         avg_concentric_velocity: convertVelocity(rep.avgConcentricVelocity),
         avg_eccentric_velocity: convertVelocity(rep.avgEccentricVelocity),
         peak_concentric_velocity: convertVelocity(rep.peakConcentricVelocity),
-
         concentric_duration: rep.concentricDuration,
         eccentric_duration: rep.eccentricDuration,
         percent_speed_drop: rep.percentSpeedDrop,
         pause_duration: rep.pauseDuration ?? 0,
-
         rpe: repRpe,
-        // 🔥 NEW: Store RIR alongside RPE
         rir: repRir,
       };
     });
@@ -218,19 +254,15 @@ export default function SaveSetModal({
   };
 
   const previewFinalRpe = finalRepRpe;
-  const previewFirstRpe =
-    previewFinalRpe == null
-      ? null
-      : previewFinalRpe - (repStats.length - 1);
+  const previewFirstRpe = previewFinalRpe == null ? null : previewFinalRpe - (repStats.length - 1);
 
   return (
-    // ... [No changes needed in the UI return block!] ...
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm"
       onClick={onClose}
     >
       <div
-        className="relative w-full max-w-sm bg-[#1a1a1a] border border-white/10 rounded-2xl p-6 shadow-2xl max-h-[90vh] overflow-y-auto"
+        className="relative w-full max-w-sm bg-[#1a1a1a] border border-white/10 rounded-2xl p-6 shadow-2xl max-h-[90vh] overflow-y-auto scrollbar-hide"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -243,7 +275,6 @@ export default function SaveSetModal({
               {velocityUnit}
             </p>
           </div>
-
           <button
             onClick={onClose}
             className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white/60 hover:text-white transition-all"
@@ -258,7 +289,6 @@ export default function SaveSetModal({
             <label className="text-white/60 text-xs font-semibold uppercase tracking-wider mb-1.5 block">
               Exercise
             </label>
-
             <div className="relative">
               <select
                 value={exercise}
@@ -267,51 +297,69 @@ export default function SaveSetModal({
                 style={{ backgroundColor: "#1a1a1a", color: "white" }}
               >
                 {EXERCISES.map((ex) => (
-                  <option
-                    key={ex.id}
-                    value={ex.id}
-                    style={{ backgroundColor: "#1a1a1a", color: "white" }}
-                  >
+                  <option key={ex.id} value={ex.id} style={{ backgroundColor: "#1a1a1a", color: "white" }}>
                     {ex.label}
                   </option>
                 ))}
               </select>
-
               <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-white/40">
                 ▼
               </div>
             </div>
           </div>
 
-          {/* Weight */}
-          <div>
-            <label className="text-white/60 text-xs font-semibold uppercase tracking-wider mb-1.5 block">
-              Weight (kg){" "}
-              <span className="text-white/20 normal-case font-normal">
-                — optional
-              </span>
-            </label>
+          <div className="grid grid-cols-2 gap-3">
+            {/* Set Number */}
+            <div>
+              <label className="text-white/60 text-xs font-semibold uppercase tracking-wider mb-1.5 flex justify-between items-center">
+                <span>Set Number</span>
+                {isFetchingSet && <span className="text-orange-400 text-[10px] animate-pulse">Auto...</span>}
+              </label>
+              <div className="flex bg-[#1a1a1a] border border-white/10 rounded-xl overflow-hidden">
+                <button 
+                  onClick={() => setSetNumber(Math.max(1, setNumber - 1))}
+                  className="px-3 bg-white/5 hover:bg-white/10 text-white/60 transition-colors"
+                >
+                  -
+                </button>
+                <input
+                  type="number"
+                  value={setNumber}
+                  onChange={(e) => setSetNumber(Math.max(1, parseInt(e.target.value) || 1))}
+                  className="w-full bg-transparent px-2 py-3 text-center text-white focus:outline-none focus:bg-white/5 transition-colors"
+                  min={1}
+                />
+                <button 
+                  onClick={() => setSetNumber(setNumber + 1)}
+                  className="px-3 bg-white/5 hover:bg-white/10 text-white/60 transition-colors"
+                >
+                  +
+                </button>
+              </div>
+            </div>
 
-            <input
-              type="number"
-              value={weightKg}
-              onChange={(e) => setWeightKg(e.target.value)}
-              placeholder="e.g. 100"
-              min={0}
-              step={0.5}
-              className="w-full bg-[#1a1a1a] border border-white/10 rounded-xl px-4 py-3 text-white placeholder-white/20 focus:outline-none focus:border-orange-500 transition-colors"
-            />
+            {/* Weight */}
+            <div>
+              <label className="text-white/60 text-xs font-semibold uppercase tracking-wider mb-1.5 block">
+                Weight (kg)
+              </label>
+              <input
+                type="number"
+                value={weightKg}
+                onChange={(e) => setWeightKg(e.target.value)}
+                placeholder="e.g. 100"
+                min={0}
+                step={0.5}
+                className="w-full bg-[#1a1a1a] border border-white/10 rounded-xl px-4 py-3 text-white placeholder-white/20 focus:outline-none focus:border-orange-500 transition-colors"
+              />
+            </div>
           </div>
 
           {/* RPE */}
           <div>
             <label className="text-white/60 text-xs font-semibold uppercase tracking-wider mb-1.5 block">
-              Final Rep RPE{" "}
-              <span className="text-white/20 normal-case font-normal">
-                — optional
-              </span>
+              Final Rep RPE <span className="text-white/20 normal-case font-normal">— optional</span>
             </label>
-
             <div className="relative">
               <select
                 value={rpe}
@@ -320,21 +368,15 @@ export default function SaveSetModal({
                 style={{ backgroundColor: "#1a1a1a", color: "white" }}
               >
                 {RPE_OPTIONS.map((opt) => (
-                  <option
-                    key={opt.value}
-                    value={opt.value}
-                    style={{ backgroundColor: "#1a1a1a", color: "white" }}
-                  >
+                  <option key={opt.value} value={opt.value} style={{ backgroundColor: "#1a1a1a", color: "white" }}>
                     {opt.label}
                   </option>
                 ))}
               </select>
-
               <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-white/40">
                 ▼
               </div>
             </div>
-
             {previewFinalRpe != null && (
               <p className="text-white/30 text-xs mt-1.5">
                 Saved per rep as RPE {previewFirstRpe} → {previewFinalRpe}
@@ -345,12 +387,8 @@ export default function SaveSetModal({
           {/* Notes */}
           <div>
             <label className="text-white/60 text-xs font-semibold uppercase tracking-wider mb-1.5 block">
-              Notes{" "}
-              <span className="text-white/20 normal-case font-normal">
-                — optional
-              </span>
+              Notes <span className="text-white/20 normal-case font-normal">— optional</span>
             </label>
-
             <input
               type="text"
               value={notes}
@@ -360,16 +398,12 @@ export default function SaveSetModal({
             />
           </div>
 
-          {error && (
-            <p className="text-red-400 text-sm bg-red-500/10 px-3 py-2 rounded-lg">
-              {error}
-            </p>
-          )}
+          {error && <p className="text-red-400 text-sm bg-red-500/10 px-3 py-2 rounded-lg">{error}</p>}
 
           <button
             onClick={handleSave}
             disabled={loading}
-            className="w-full py-3 bg-orange-500 hover:bg-orange-600 disabled:bg-orange-500/40 text-white font-bold rounded-xl transition-colors"
+            className="w-full py-3 mt-2 bg-orange-500 hover:bg-orange-600 disabled:bg-orange-500/40 text-white font-bold rounded-xl transition-colors"
           >
             {loading ? "Saving…" : "Save Set 💾"}
           </button>
