@@ -25,9 +25,6 @@ export default function VideoPlayback({ file, result, vFrames }: Props) {
   const [playing, setPlaying] = useState(false);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  
-  // To perfectly hug the video and prevent letterboxing offset
-  const [aspectRatio, setAspectRatio] = useState<number | null>(null);
 
   const { draw } = useCanvasOverlay(result, vFrames);
 
@@ -51,12 +48,7 @@ export default function VideoPlayback({ file, result, vFrames }: Props) {
     video.src = url;
 
     const onCanPlay = () => {
-      if (!cancelled) {
-        setReady(true);
-        if (videoRef.current) {
-          setAspectRatio(videoRef.current.videoWidth / videoRef.current.videoHeight);
-        }
-      }
+      if (!cancelled) setReady(true);
     };
 
     const onError = (e: Event) => {
@@ -92,25 +84,21 @@ export default function VideoPlayback({ file, result, vFrames }: Props) {
     const fontSizeSmall = Math.max(Math.floor(width * 0.025), 12);
 
     ctx.textAlign = "right";
-    ctx.textBaseline = "top"; // Moved to TOP so player controls don't hide it
+    ctx.textBaseline = "top";
 
-    // Add shadow so it's readable on bright walls/lights
     ctx.shadowColor = "rgba(0,0,0,0.8)";
     ctx.shadowBlur = 10;
     ctx.shadowOffsetX = 2;
     ctx.shadowOffsetY = 2;
     
-    // Draw "VELOCITY"
     ctx.font = `italic 900 ${fontSizeLarge}px sans-serif`;
     ctx.fillStyle = "rgba(255, 255, 255, 0.95)";
     ctx.fillText("VELOCITY", width - padding, padding);
 
-    // Draw "TRACKED USING"
     ctx.font = `600 ${fontSizeSmall}px sans-serif`;
     ctx.fillStyle = "rgba(255, 255, 255, 0.7)";
     ctx.fillText("TRACKED USING", width - padding, padding + fontSizeLarge + 5);
 
-    // Reset shadow for other drawings
     ctx.shadowColor = "transparent";
   };
 
@@ -208,7 +196,7 @@ export default function VideoPlayback({ file, result, vFrames }: Props) {
 
     } catch (err) {
       console.error("Export failed:", err);
-      setError("Failed to export video. Your browser may not support MediaRecorder.");
+      setError("Failed to export video.");
       setIsExporting(false);
       isExportingRef.current = false;
       setPlaying(false);
@@ -247,70 +235,72 @@ export default function VideoPlayback({ file, result, vFrames }: Props) {
 
   return (
     <div className="flex flex-col gap-3">
-      {/* 
-        This container forces the Canvas to exactly match the video size 
-        No letterboxing, no offset dots!
-      */}
-      <div
-        className="w-full flex justify-center bg-black rounded-xl overflow-hidden border border-white/10"
-        style={{ height: "65vh", minHeight: "300px" }}
-      >
-        {aspectRatio && (
-          <div
-            className="relative h-full flex justify-center items-center"
-            style={{ aspectRatio: `${aspectRatio}`, maxWidth: "100%" }}
-          >
-            {/* Video element */}
-            <video
-              ref={videoRef}
-              onEnded={onEnded}
-              playsInline
-              muted
-              className="w-full h-full object-contain block"
-              style={{ display: ready && !error ? "block" : "none" }}
-            />
-
-            {/* Visual Canvas overlay */}
-            <canvas
-              ref={canvasRef}
-              className="absolute inset-0 w-full h-full block"
-              style={{ pointerEvents: "none", display: error ? "none" : "block" }}
-            />
-            
-            {/* Hidden Export Canvas */}
-            <canvas ref={exportCanvasRef} className="hidden" />
-
-            {/* Loading state */}
-            {!ready && !error && (
-              <div className="absolute inset-0 flex items-center justify-center z-10 bg-black">
-                <div className="flex flex-col items-center gap-2">
-                  <div className="w-6 h-6 border-2 border-orange-500 border-t-transparent rounded-full animate-spin" />
-                  <span className="text-white/40 text-sm">Loading video…</span>
-                </div>
+      
+      {/* Outer wrapper: Full width, dark background, min height */}
+      <div className="w-full flex items-center justify-center bg-black rounded-xl overflow-hidden border border-white/10 min-h-[300px] py-4">
+        
+        {/* Inner wrapper: Tightly wraps the video dimensions */}
+        <div className="relative inline-block max-h-[65vh] max-w-full">
+          
+          {/* Loading state */}
+          {!ready && !error && (
+            <div className="absolute inset-0 flex items-center justify-center z-10">
+              <div className="flex flex-col items-center gap-2">
+                <div className="w-6 h-6 border-2 border-orange-500 border-t-transparent rounded-full animate-spin" />
+                <span className="text-white/40 text-sm">Loading video…</span>
               </div>
-            )}
+            </div>
+          )}
 
-            {/* Tap to play overlay when paused */}
-            {ready && !playing && !error && !isExporting && (
-              <button
-                onClick={togglePlay}
-                className="absolute inset-0 flex items-center justify-center bg-black/20 z-10"
-              >
-                <div className="w-16 h-16 rounded-full bg-orange-500/90 flex items-center justify-center shadow-lg">
-                  <span className="text-white text-2xl ml-1">▶</span>
-                </div>
-              </button>
-            )}
-
-            {/* Recording Overlay */}
-            {isExporting && (
-              <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-black/80 backdrop-blur-md">
-                 <div className="w-10 h-10 border-4 border-red-500 border-t-transparent rounded-full animate-spin mb-4" />
-                 <p className="text-white font-bold animate-pulse text-lg">Generating Video...</p>
+          {/* Error state */}
+          {error && (
+            <div className="absolute inset-0 flex items-center justify-center z-10 px-6 bg-black/80">
+              <div className="text-center">
+                <p className="text-red-400 text-sm mb-3 font-semibold">{error}</p>
               </div>
-            )}
-          </div>
-        )}
+            </div>
+          )}
+
+          {/* Video element */}
+          <video
+            ref={videoRef}
+            onEnded={onEnded}
+            playsInline
+            muted
+            className="block h-auto w-auto max-h-[65vh] max-w-full"
+            style={{ opacity: ready && !error ? 1 : 0 }}
+          />
+
+          {/* Visual Canvas overlay */}
+          <canvas
+            ref={canvasRef}
+            className="absolute top-0 left-0 w-full h-full pointer-events-none"
+            style={{ display: ready && !error ? "block" : "none" }}
+          />
+          
+          {/* Hidden Export Canvas */}
+          <canvas ref={exportCanvasRef} className="hidden" />
+
+          {/* Tap to play overlay when paused */}
+          {ready && !playing && !error && !isExporting && (
+            <button
+              onClick={togglePlay}
+              className="absolute inset-0 flex items-center justify-center bg-black/20 z-10 transition-colors hover:bg-black/40"
+            >
+              <div className="w-16 h-16 rounded-full bg-orange-500/90 flex items-center justify-center shadow-lg">
+                <span className="text-white text-2xl ml-1">▶</span>
+              </div>
+            </button>
+          )}
+
+          {/* Recording Overlay */}
+          {isExporting && (
+            <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-black/80 backdrop-blur-md">
+               <div className="w-10 h-10 border-4 border-red-500 border-t-transparent rounded-full animate-spin mb-4" />
+               <p className="text-white font-bold animate-pulse text-lg">Generating Video...</p>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Controls */}
