@@ -140,8 +140,10 @@ export default function SeedStep({ file, onSeedSet }: SeedStepProps) {
         pxPerCm: finalPxPerCm,
         pxPerM: finalPxPerCm * 100,
       };
-      const offsetPixels = aiBox.height * 0.15;
-      onSeedSet({ x: aiBox.x, y: aiBox.y - offsetPixels }, autoCalibration, liftType);
+      
+      // 🔥 FIX: Removed the offsetPixels subtraction. 
+      // Now it targets the exact center of the detected plate!
+      onSeedSet({ x: aiBox.x, y: aiBox.y }, autoCalibration, liftType);
     }
   };
 
