@@ -44,8 +44,6 @@ export function useLiveAnalyser() {
   const [currentPoint, setCurrentPoint] = useState<Point | null>(null);
   const [recordedVideoBlob, setRecordedVideoBlob] = useState<Blob | null>(null);
   const [liveVelocity, setLiveVelocity] = useState<number | null>(null);
-  
-  // ✨ NEW: Threshold Met state
   const [thresholdMet, setThresholdMet] = useState(false);
   
   const [audioEnabled, setAudioEnabled] = useState(true);
@@ -128,7 +126,6 @@ export function useLiveAnalyser() {
     }
   }, [stream]);
 
-  // ✨ UPDATED: Accept lossThresholdPct
   const startTracking = async (seedX: number, seedY: number, plateHeightPx?: number, lossThresholdPct?: number | null) => {
     const video = videoRef.current;
     if (!video || !workerRef.current) return;
@@ -152,7 +149,7 @@ export function useLiveAnalyser() {
     setIsTracking(true);
     isTrackingRef.current = true;
     setLiveVelocity(null);
-    setThresholdMet(false); // ✨ Reset threshold state for new set
+    setThresholdMet(false); 
 
     const videoWidth = video.videoWidth;
     const videoHeight = video.videoHeight;
@@ -177,14 +174,17 @@ export function useLiveAnalyser() {
     const startTime = performance.now();
     let frameIndex = 0;
 
-    let isLifting = false;
-    let concentricStartY = 0;
-    let concentricStartTime = 0;
+    // ✨ RE-WRITTEN: Bulletproof Phase State Machine
+    let currentPhase = 'idle'; // 'idle' or 'concentric'
+    let bottomY = 0;
+    let bottomTime = 0;
+    let topY = 0;
+    let topTime = 0;
+    
     const recentYs: number[] = [];
     const recentTimes: number[] = [];
     const pxPerM = plateHeightPx ? plateHeightPx / 0.45 : null;
 
-    // ✨ NEW: Track the fastest rep in the set
     let maxRepVelocity = 0;
 
     const trackLoop = async () => {
@@ -209,6 +209,7 @@ export function useLiveAnalyser() {
         position: realPoint,
       });
 
+      // ✨ BULLETPROOF HEURISTIC
       if (pxPerM) {
         recentYs.push(realPoint.y);
         recentTimes.push(timeSeconds);
@@ -218,50 +219,61 @@ export function useLiveAnalyser() {
         }
 
         if (recentYs.length === 5) {
-          const smoothY = medianOf(recentYs);
-          const oldestY = recentYs[0];
           const dt = timeSeconds - recentTimes[0];
+          const dy = recentYs[0] - realPoint.y; // Positive = Moving UP
+          const velM = (dy / pxPerM) / dt;
 
-          const velocityPx = (oldestY - smoothY) / dt; 
-          const velocityM = velocityPx / pxPerM;
+          if (currentPhase === 'idle') {
+            // Initiate rep when definitively moving upwards
+            if (velM > 0.08) { 
+              currentPhase = 'concentric';
+              bottomY = recentYs[0];
+              bottomTime = recentTimes[0];
+              topY = realPoint.y;
+              topTime = timeSeconds;
+            }
+          } else if (currentPhase === 'concentric') {
+            // Keep tracking the absolute highest point reached during the grind
+            if (realPoint.y < topY) {
+              topY = realPoint.y;
+              topTime = timeSeconds;
+            }
 
-          if (!isLifting && velocityM > 0.15) { 
-            isLifting = true;
-            concentricStartY = realPoint.y;
-            concentricStartTime = timeSeconds;
-          } else if (isLifting && velocityM < 0.05) { 
-            isLifting = false;
-            const distM = (concentricStartY - realPoint.y) / pxPerM;
-            const durS = timeSeconds - concentricStartTime;
-            
-            if (distM > 0.15 && durS > 0.2) {
-              const avgVel = distM / durS;
-              setLiveVelocity(avgVel);
+            // Only end the rep if the lifter actively starts moving the bar DOWN
+            if (velM < -0.05) { 
+              currentPhase = 'idle';
+              
+              const distM = (bottomY - topY) / pxPerM;
+              const durS = topTime - bottomTime;
+              
+              // Validate it was a real rep (moved > 15cm, took > 0.1s)
+              if (distM > 0.15 && durS > 0.1) {
+                const avgVel = distM / durS;
+                setLiveVelocity(avgVel);
 
-              let isStopSet = false;
+                let isStopSet = false;
 
-              // ✨ VBT MATH: Compare against fastest rep
-              if (maxRepVelocity === 0) {
-                maxRepVelocity = avgVel;
-              } else {
-                if (avgVel > maxRepVelocity) maxRepVelocity = avgVel; // New PR rep!
-                
-                if (lossThresholdPct) {
-                  const velocityLoss = ((maxRepVelocity - avgVel) / maxRepVelocity) * 100;
-                  if (velocityLoss >= lossThresholdPct) {
-                    isStopSet = true;
-                    setThresholdMet(true);
+                if (maxRepVelocity === 0) {
+                  maxRepVelocity = avgVel;
+                } else {
+                  if (avgVel > maxRepVelocity) maxRepVelocity = avgVel; // New PR
+                  
+                  if (lossThresholdPct) {
+                    const velocityLoss = ((maxRepVelocity - avgVel) / maxRepVelocity) * 100;
+                    if (velocityLoss >= lossThresholdPct) {
+                      isStopSet = true;
+                      setThresholdMet(true);
+                    }
                   }
                 }
-              }
 
-              if (audioEnabledRef.current && 'speechSynthesis' in window) {
-                window.speechSynthesis.cancel(); 
-                // ✨ Add "Stop set" to the utterance if threshold is crossed
-                const text = isStopSet ? `${avgVel.toFixed(2)}. Stop set!` : avgVel.toFixed(2);
-                const utterance = new SpeechSynthesisUtterance(text);
-                utterance.rate = 1.1; 
-                window.speechSynthesis.speak(utterance);
+                if (audioEnabledRef.current && 'speechSynthesis' in window) {
+                  window.speechSynthesis.cancel(); 
+                  const text = isStopSet ? `${avgVel.toFixed(2)}. Stop set!` : avgVel.toFixed(2);
+                  const utterance = new SpeechSynthesisUtterance(text);
+                  utterance.rate = 1.1; 
+                  window.speechSynthesis.speak(utterance);
+                }
               }
             }
           }
@@ -309,7 +321,7 @@ export function useLiveAnalyser() {
     liveVelocity,
     audioEnabled,    
     setAudioEnabled,
-    thresholdMet, // ✨ Export state for UI flashing
+    thresholdMet, 
     startCamera,
     stopCamera,
     startTracking,
