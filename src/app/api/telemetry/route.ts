@@ -14,13 +14,17 @@ export async function POST(request: Request) {
 
     // Insert the payload into our new Supabase table
     const { error } = await supabase
-      .from("lift_telemetry")
+      .from("lift_telemetry") // <-- Make sure your table is actually named this!
       .insert({
         lift_type: data.liftType,
         total_frames: data.totalFrames,
         video_duration_seconds: data.videoDurationSeconds,
         heuristic_rep_count: data.heuristicRepCount,
         trajectory_json: data.trajectory,
+        
+        // 💥 NEW: Add these two lines to save the human-verified flags!
+        is_edited: data.isEdited ?? false,
+        original_rep_count: data.originalRepCount ?? null,
       });
 
     if (error) {
@@ -32,7 +36,7 @@ export async function POST(request: Request) {
     }
 
     console.log(
-      `[Telemetry] Saved ${data.liftType} data with ${data.trajectory.length} frames to Supabase.`
+      `[Telemetry] Saved ${data.liftType} data with ${data.trajectory.length} frames to Supabase. (Edited: ${data.isEdited})`
     );
 
     return NextResponse.json({ success: true });

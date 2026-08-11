@@ -36,8 +36,10 @@ export default function ResultsStep({
   
   // ── Manual Rep Editor State ────────────────────────────────────────────────
   const [showEditor, setShowEditor] = useState(false);
-  // Fixed TS Error: Initialize as undefined instead of null
   const [manualReps, setManualReps] = useState<ManualRep[] | undefined>(undefined); 
+  
+  // Keep track of the original AI guess so we can compare it later
+  const [originalRepCount, setOriginalRepCount] = useState<number | null>(null);
 
   const { user } = useAuth();
   const telemetrySent = useRef(false);
@@ -52,11 +54,12 @@ export default function ResultsStep({
 
   useEffect(() => {
     // Only send telemetry on the INITIAL heuristic guess, not on every edit
-    if (!telemetrySent.current && vFrames.length > 0) {
-      saveLiftTelemetry(liftType, vFrames, repStats.length);
+    if (!telemetrySent.current && vFrames.length > 0 && manualReps === undefined) {
+      saveLiftTelemetry(liftType, vFrames, repStats.length, false);
+      setOriginalRepCount(repStats.length); // Save the AI's guess
       telemetrySent.current = true;
     }
-  }, [vFrames, repStats.length, liftType]);
+  }, [vFrames, repStats.length, liftType, manualReps]);
 
   const views: { id: ResultView; label: string; icon: string }[] = [
     { id: "table", label: "Rep Stats", icon: "📊" },
@@ -89,9 +92,26 @@ export default function ResultsStep({
 
   // ── EDITOR HANDLER ─────────────────────────────────────────────────────────
   const handleSaveEditor = (reps: ManualRep[]) => {
+    // 1. Instantly calculate the fresh frames based on the new edits
+    const { vFrames: newVFrames } = analyseReps(result.frames, result.fps, { 
+      calibration, 
+      liftType, 
+      manualReps: reps 
+    });
+
+    // 2. Fire a brand new telemetry row tagged as "Human Edited"
+    saveLiftTelemetry(
+      liftType, 
+      newVFrames, 
+      reps.length, 
+      true, // isEdited = true
+      originalRepCount ?? undefined
+    );
+
+    // 3. Update the UI state
     setManualReps(reps);
     setShowEditor(false);
-    setView("table"); // Ensure we are on the table to see the new stats immediately
+    setView("table");
   };
 
   return (

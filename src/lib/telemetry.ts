@@ -1,4 +1,3 @@
-// src/lib/telemetry.ts
 import { VelocityFrame, LiftType } from "@/types";
 
 export interface LiftTelemetryPayload {
@@ -6,6 +5,8 @@ export interface LiftTelemetryPayload {
   totalFrames: number;
   videoDurationSeconds: number;
   heuristicRepCount: number;
+  isEdited?: boolean;        // <-- NEW FLAG
+  originalRepCount?: number; // <-- NEW FLAG
   trajectory: {
     t: number; // timeSeconds
     x: number; // x position
@@ -17,7 +18,9 @@ export interface LiftTelemetryPayload {
 export async function saveLiftTelemetry(
   liftType: LiftType,
   vFrames: VelocityFrame[],
-  heuristicRepCount: number
+  heuristicRepCount: number,
+  isEdited: boolean = false, // <-- NEW FLAG
+  originalRepCount?: number  // <-- NEW FLAG
 ) {
   try {
     // 1. Strip down the giant vFrames array into a tiny, ML-friendly format
@@ -33,6 +36,8 @@ export async function saveLiftTelemetry(
       totalFrames: vFrames.length,
       videoDurationSeconds: vFrames[vFrames.length - 1]?.timeSeconds || 0,
       heuristicRepCount,
+      isEdited,             // <-- ADDED TO PAYLOAD
+      originalRepCount,     // <-- ADDED TO PAYLOAD
       trajectory,
     };
     
