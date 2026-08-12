@@ -97,7 +97,7 @@ export default function App() {
           
           {/* ✨ NEW: Beta Feedback Button (Always visible) */}
           <a 
-            href="YOUR_GOOGLE_FORM_LINK_HERE" 
+            href="https://docs.google.com/forms/d/e/1FAIpQLSeKhX19phEoBkpqb2uqDgiMqDlAJW8ecFXJaXgd6UGDcqh6wg/viewform?usp=dialog" 
             target="_blank" 
             rel="noopener noreferrer"
             className="hidden sm:flex items-center gap-1.5 bg-blue-600/20 text-blue-400 border border-blue-500/30 hover:bg-blue-600/30 hover:border-blue-500/50 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider transition-all"
