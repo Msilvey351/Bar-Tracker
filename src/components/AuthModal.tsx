@@ -112,6 +112,11 @@ export default function AuthModal({ onClose }: Props) {
               {loading ? "Connecting..." : "Continue with Google"}
             </button>
 
+            <p className="text-white/40 text-[10px] text-center mt-4 px-4">
+              By signing in, you agree to our <a href="/terms" className="underline">Terms of Service</a> and <a href="/privacy" className="underline">Privacy Policy</a>. 
+              Velocity Data is a beta tool. Always lift safely and at your own risk.
+            </p>
+
             {/* Divider */}
             <div className="flex items-center gap-3">
               <div className="h-px bg-white/10 flex-1" />
