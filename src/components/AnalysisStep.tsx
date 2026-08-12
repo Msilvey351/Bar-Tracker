@@ -1,7 +1,8 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import type { FrameResult } from "@/types";
+import { track } from "@vercel/analytics"; // ✨ Added analytics
 import {
   ComposedChart,
   Line,
@@ -34,6 +35,16 @@ export default function AnalysisStep({
   liveFrames,
   liveFps,
 }: Props) {
+
+  // ✨ Track errors automatically when they occur
+  useEffect(() => {
+    if (error) {
+      track("Video_Analysis_Error", { 
+        error_message: error, 
+        frames_processed: liveFrames.length 
+      });
+    }
+  }, [error, liveFrames.length]);
 
   const chartData = useMemo((): ChartPoint[] => {
     if (liveFrames.length < MIN_FRAMES_TO_SHOW_CHART || liveFps === 0) {

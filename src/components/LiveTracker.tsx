@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useLiveAnalyser } from "@/hooks/useLiveAnalyser";
 import { loadModel, detectBarbell } from "@/lib/yolo";
 import type { FrameResult } from "@/types";
+import { track } from '@vercel/analytics';
 
 interface LiveTrackerProps {
   onSetComplete: (
@@ -84,6 +85,7 @@ export function LiveTracker({ onSetComplete, onCancel }: LiveTrackerProps) {
 
       if (scanStartTimeRef.current && Date.now() - scanStartTimeRef.current > 5000) {
         setScanFailed(true);
+        track('Live_Scan_Timeout_Failed');
         return; 
       }
 
@@ -144,8 +146,14 @@ export function LiveTracker({ onSetComplete, onCancel }: LiveTrackerProps) {
   const handleStop = async () => {
     const { frames, blob } = await stopTracking();
     if (!videoRef.current || frames.length === 0 || !finalPlateHeight || !blob || blob.size === 0) {
+      track('Live_Set_Cancelled');
       return onCancel();
     }
+    track('Live_Set_Completed', { 
+      threshold_used: velocityThreshold !== null ? 'yes' : 'no',
+      hit_threshold: thresholdMet ? 'yes' : 'no'
+    });
+    
     const duration = frames[frames.length - 1].timeSeconds;
     const estimatedFps = frames.length / duration;
     onSetComplete(frames, estimatedFps, videoRef.current.videoWidth, videoRef.current.videoHeight, finalPlateHeight, blob);

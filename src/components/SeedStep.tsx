@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Point, CalibrationPoints, LiftType } from "@/types";
 import { loadModel, detectBarbell } from "@/lib/yolo";
+import { track } from '@vercel/analytics';
 
 interface SeedStepProps {
   file: File;
@@ -89,6 +90,8 @@ export default function SeedStep({ file, onSeedSet }: SeedStepProps) {
     if (!videoRef.current) return;
 
     if (isManualMode) {
+      track('Video_Analysis_Started', { mode: 'manual', lift: liftType });
+
       const vw = videoRef.current.videoWidth;
       const vh = videoRef.current.videoHeight;
       const cx = (crosshair.x / 100) * vw;
@@ -110,6 +113,7 @@ export default function SeedStep({ file, onSeedSet }: SeedStepProps) {
       onSeedSet({ x: cx, y: cy }, manualCalibration, liftType);
     } else {
       if (!aiBox) return;
+      track('Video_Analysis_Started', { mode: 'ai', lift: liftType });
       const finalPxPerCm = aiBox.width / 45.0;
       const autoCalibration: CalibrationPoints = {
         top: { x: 0, y: 0 },
