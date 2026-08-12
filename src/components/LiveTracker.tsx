@@ -58,11 +58,31 @@ export function LiveTracker({ onSetComplete, onCancel }: LiveTrackerProps) {
   useEffect(() => {
     startCamera();
     loadModel().then(() => setModelLoading(false));
+    
     return () => {
+      // 1. Call the hook's stop function
       stopCamera();
+      
+      // 2. Stop the scanning loop
       if (scanLoopRef.current) cancelAnimationFrame(scanLoopRef.current);
+      
+      // ✨ 3. THE HARD-STOP CAMERA CLEANUP ✨
+      // This guarantees the green dot turns off by iterating through the physical hardware tracks
+      if (videoRef.current && videoRef.current.srcObject) {
+        const currentStream = videoRef.current.srcObject as MediaStream;
+        const tracks = currentStream.getTracks();
+        tracks.forEach(track => {
+          track.stop();
+        });
+        videoRef.current.srcObject = null;
+      }
+      
+      // Also stop the stream variable from the hook if it exists
+      if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+      }
     };
-  }, []);
+  }, []); // <-- We intentionally leave stream out of the dependency array here so this only runs on unmount
 
   useEffect(() => {
     if (videoRef.current && stream) {
