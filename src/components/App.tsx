@@ -81,7 +81,7 @@ export default function App() {
       {showProfile && <VelocityProfile onClose={() => setShowProfile(false)} />}
       {showCoach && <VbtCoach onClose={() => setShowCoach(false)} />}
         
-      <header className="w-full py-4 px-6 border-b border-white/10 flex items-center gap-3">
+      <header className="w-full py-4 px-6 border-b border-white/10 flex flex-wrap items-center gap-3">
         <span className="text-2xl">🏋️</span>
         <h1 className="text-xl font-bold tracking-tight text-orange-400">
           Barbell Tracker
@@ -94,6 +94,17 @@ export default function App() {
         )}
 
         <div className="ml-auto flex items-center gap-3">
+          
+          {/* ✨ NEW: Beta Feedback Button (Always visible) */}
+          <a 
+            href="YOUR_GOOGLE_FORM_LINK_HERE" 
+            target="_blank" 
+            rel="noopener noreferrer"
+            className="hidden sm:flex items-center gap-1.5 bg-blue-600/20 text-blue-400 border border-blue-500/30 hover:bg-blue-600/30 hover:border-blue-500/50 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider transition-all"
+          >
+            <span>💬</span> Feedback
+          </a>
+
           {user ? (
             <div className="flex items-center gap-2">
               <span className="text-white/40 text-xs hidden sm:block truncate max-w-[8rem]">
@@ -105,23 +116,23 @@ export default function App() {
               >
                 📋 History
               </button>
-                            <button
+              <button
                 onClick={() => setShowProfile(true)}
                 className="text-xs text-white/70 hover:text-white transition-colors border border-white/10 hover:border-white/20 rounded-lg px-2 py-1"
               >
                 📈 Profile
               </button>
               <button
-                onClick={signOut}
-                className="text-xs text-white/40 hover:text-white/70 transition-colors border border-white/10 hover:border-white/20 rounded-lg px-2 py-1"
-              >
-                Sign out
-              </button>
-                            <button
                 onClick={() => setShowCoach(true)}
                 className="text-xs text-white/70 hover:text-white transition-colors border border-white/10 hover:border-white/20 rounded-lg px-2 py-1"
               >
                 🤖 Coach
+              </button>
+              <button
+                onClick={signOut}
+                className="text-xs text-white/40 hover:text-white/70 transition-colors border border-white/10 hover:border-white/20 rounded-lg px-2 py-1"
+              >
+                Sign out
               </button>
             </div>
           ) : (
@@ -141,11 +152,23 @@ export default function App() {
             ?
           </button>
 
-          <span className="text-xs text-white/40 font-mono">
+          <span className="text-xs text-white/40 font-mono hidden sm:inline-block">
             {stage.toUpperCase()}
           </span>
         </div>
       </header>
+
+      {/* Mobile-only feedback button (so it doesn't crowd the top nav on tiny screens) */}
+      <div className="w-full flex justify-center mt-3 sm:hidden">
+        <a 
+            href="https://forms.gle/TgYqQTD4KoWCJkr58" 
+            target="_blank" 
+            rel="noopener noreferrer"
+            className="flex items-center gap-1.5 bg-blue-600/20 text-blue-400 border border-blue-500/30 hover:bg-blue-600/30 px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider"
+          >
+            <span>💬</span> Report a Bug / Feedback
+        </a>
+      </div>
 
       <div className="flex gap-2 mt-6 mb-8">
         {(["upload", "setup", "analysing", "results"]).map((s, i) => (
@@ -205,8 +228,6 @@ export default function App() {
             <LiveTracker
               onCancel={() => setStage("upload")}
               onSetComplete={(frames, fps, width, height, plateHeightPx, videoBlob) => {
-                
-                // 🔥 Auto-Calibration Math!
                 const finalPxPerCm = plateHeightPx / 45; 
 
                 setCalibration({
@@ -225,7 +246,6 @@ export default function App() {
                   durationSeconds: frames.length > 0 ? frames[frames.length - 1].timeSeconds : 0
                 });
 
-                // Wrap the recorded Blob in a File so ResultsStep can play it seamlessly
                 const liveVideoFile = new File([videoBlob], "live-set.webm", { type: "video/webm" });
                 setVideoFile(liveVideoFile);
 
