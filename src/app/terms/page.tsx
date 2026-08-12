@@ -5,7 +5,7 @@ export default function Terms() {
       <p className="mb-4">Last Updated: {new Date().toLocaleDateString()}</p>
       
       <h2 className="text-xl font-bold text-white mt-8 mb-4">1. Acceptance of Terms</h2>
-      <p>By accessing or using Velocity Data ("the App"), you agree to be bound by these Terms of Service. This is a beta product provided "as is" without any warranties.</p>
+      <p>By accessing or using Velocity Data (this web app), you agree to be bound by these Terms of Service. This is a beta product provided "as is" without any warranties.</p>
 
       <h2 className="text-xl font-bold text-white mt-8 mb-4">2. Assumption of Risk & Medical Disclaimer</h2>
       <p className="font-bold text-orange-400">

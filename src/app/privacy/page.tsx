@@ -9,9 +9,8 @@ export default function Privacy() {
       <h2 className="text-xl font-bold text-white mt-8 mb-4">2. Video Processing</h2>
       <p>
         <strong>[CRITICAL: ADJUST THIS BASED ON YOUR APP]</strong> 
-        Videos recorded or uploaded for velocity tracking are processed locally / uploaded to our secure servers to perform computer vision analysis. 
-        [If you delete them: "Videos are temporarily stored for analysis and are immediately deleted after the metrics are calculated."] 
-        [If you keep them: "Videos are stored securely so you can review your past lifts. You may delete your videos at any time."]
+        Videos recorded or uploaded for velocity tracking are processed locally to perform computer vision analysis. The video never leaves your device, and is not stored. 
+        Velocity data is stored for the purpose of training Rep Detection Algorithms, but no other data is stored. 
       </p>
 
       <h2 className="text-xl font-bold text-white mt-8 mb-4">3. Data Security</h2>
