@@ -8,7 +8,6 @@ export default function Privacy() {
 
       <h2 className="text-xl font-bold text-white mt-8 mb-4">2. Video Processing</h2>
       <p>
-        <strong>[CRITICAL: ADJUST THIS BASED ON YOUR APP]</strong> 
         Videos recorded or uploaded for velocity tracking are processed locally to perform computer vision analysis. The video never leaves your device, and is not stored. 
         Velocity data is stored for the purpose of training Rep Detection Algorithms, but no other data is stored. 
       </p>
