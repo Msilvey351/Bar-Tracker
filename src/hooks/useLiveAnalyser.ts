@@ -41,6 +41,8 @@ export function useLiveAnalyser() {
   const [facingMode, setFacingMode] = useState<"environment" | "user">("environment");
   const [isTracking, setIsTracking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // ✨ NEW: State for tracking specifically if camera was blocked by user
+  const [permissionDenied, setPermissionDenied] = useState(false); 
   const [currentPoint, setCurrentPoint] = useState<Point | null>(null);
   const [recordedVideoBlob, setRecordedVideoBlob] = useState<Blob | null>(null);
   const [liveVelocity, setLiveVelocity] = useState<number | null>(null);
@@ -99,6 +101,8 @@ export function useLiveAnalyser() {
 
   const startCamera = async (mode: "environment" | "user" = "environment") => {
     try {
+      setPermissionDenied(false); // ✨ Reset on attempt
+      
       setStream((prev) => {
         if (prev) prev.getTracks().forEach((t) => t.stop());
         return null;
@@ -110,8 +114,13 @@ export function useLiveAnalyser() {
       });
       setStream(mediaStream);
       setFacingMode(mode);
-    } catch (e) {
+    } catch (e: any) { // ✨ Explicitly type as any to check error name
       setError("Could not access camera. Please check permissions.");
+      
+      // ✨ NEW: Check if the user explicitly clicked "Block" or if the browser denied it
+      if (e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError') {
+        setPermissionDenied(true);
+      }
     }
   };
 
@@ -174,7 +183,6 @@ export function useLiveAnalyser() {
     const startTime = performance.now();
     let frameIndex = 0;
 
-    // ✨ RE-WRITTEN: Bulletproof Phase State Machine
     let currentPhase = 'idle'; // 'idle' or 'concentric'
     let bottomY = 0;
     let bottomTime = 0;
@@ -209,7 +217,6 @@ export function useLiveAnalyser() {
         position: realPoint,
       });
 
-      // ✨ BULLETPROOF HEURISTIC
       if (pxPerM) {
         recentYs.push(realPoint.y);
         recentTimes.push(timeSeconds);
@@ -224,7 +231,6 @@ export function useLiveAnalyser() {
           const velM = (dy / pxPerM) / dt;
 
           if (currentPhase === 'idle') {
-            // Initiate rep when definitively moving upwards
             if (velM > 0.08) { 
               currentPhase = 'concentric';
               bottomY = recentYs[0];
@@ -233,20 +239,17 @@ export function useLiveAnalyser() {
               topTime = timeSeconds;
             }
           } else if (currentPhase === 'concentric') {
-            // Keep tracking the absolute highest point reached during the grind
             if (realPoint.y < topY) {
               topY = realPoint.y;
               topTime = timeSeconds;
             }
 
-            // Only end the rep if the lifter actively starts moving the bar DOWN
             if (velM < -0.05) { 
               currentPhase = 'idle';
               
               const distM = (bottomY - topY) / pxPerM;
               const durS = topTime - bottomTime;
               
-              // Validate it was a real rep (moved > 15cm, took > 0.1s)
               if (distM > 0.15 && durS > 0.1) {
                 const avgVel = distM / durS;
                 setLiveVelocity(avgVel);
@@ -316,6 +319,7 @@ export function useLiveAnalyser() {
     videoRef,
     isTracking,
     error,
+    permissionDenied, // ✨ NEW: Expose the variable
     currentPoint,
     recordedVideoBlob,
     liveVelocity,

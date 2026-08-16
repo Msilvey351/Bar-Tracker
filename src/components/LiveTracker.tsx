@@ -26,6 +26,7 @@ export function LiveTracker({ onSetComplete, onCancel }: LiveTrackerProps) {
     videoRef,
     isTracking,
     currentPoint,
+    permissionDenied, // ✨ NEW: Extract the new state
     startCamera,
     stopCamera,
     startTracking,
@@ -60,14 +61,9 @@ export function LiveTracker({ onSetComplete, onCancel }: LiveTrackerProps) {
     loadModel().then(() => setModelLoading(false));
     
     return () => {
-      // 1. Call the hook's stop function
       stopCamera();
-      
-      // 2. Stop the scanning loop
       if (scanLoopRef.current) cancelAnimationFrame(scanLoopRef.current);
       
-      // ✨ 3. THE HARD-STOP CAMERA CLEANUP ✨
-      // This guarantees the green dot turns off by iterating through the physical hardware tracks
       if (videoRef.current && videoRef.current.srcObject) {
         const currentStream = videoRef.current.srcObject as MediaStream;
         const tracks = currentStream.getTracks();
@@ -77,12 +73,11 @@ export function LiveTracker({ onSetComplete, onCancel }: LiveTrackerProps) {
         videoRef.current.srcObject = null;
       }
       
-      // Also stop the stream variable from the hook if it exists
       if (stream) {
         stream.getTracks().forEach(track => track.stop());
       }
     };
-  }, []); // <-- We intentionally leave stream out of the dependency array here so this only runs on unmount
+  }, []); 
 
   useEffect(() => {
     if (videoRef.current && stream) {
@@ -186,6 +181,49 @@ export function LiveTracker({ onSetComplete, onCancel }: LiveTrackerProps) {
     return "Hypertrophy / Failure";
   };
 
+  // ✨ NEW: Early Return UI if Camera is blocked
+  if (permissionDenied) {
+    return (
+      <div className="flex flex-col items-center justify-center w-full max-w-md mx-auto p-6 space-y-6 text-center bg-zinc-900/50 rounded-2xl border border-zinc-800 animate-in fade-in zoom-in duration-300">
+        <div className="w-16 h-16 bg-red-500/20 rounded-full flex items-center justify-center mb-2">
+          <svg className="w-8 h-8 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
+          </svg>
+        </div>
+        
+        <h2 className="text-xl font-bold text-white">Camera Access Blocked</h2>
+        
+        <p className="text-sm text-zinc-400">
+          Velocity Data needs camera access to track the barbell. Video processing runs completely on your device.
+        </p>
+
+        <div className="text-left bg-black/40 p-4 rounded-lg border border-white/5 text-sm text-zinc-300 w-full space-y-2">
+          <p className="font-semibold text-white">How to fix it:</p>
+          <ol className="list-decimal pl-4 space-y-1">
+            <li>Tap the <strong>AA</strong> or <strong>Lock icon</strong> in your browser's address bar.</li>
+            <li>Tap <strong>Website Settings</strong> or <strong>Permissions</strong>.</li>
+            <li>Allow <strong>Camera</strong> access.</li>
+            <li>Refresh this page.</li>
+          </ol>
+        </div>
+
+        <button 
+          onClick={() => window.location.reload()} 
+          className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-xl transition-all shadow-lg"
+        >
+          Refresh Page
+        </button>
+        
+        <button 
+          onClick={onCancel} 
+          className="text-zinc-500 text-sm hover:text-white transition-colors"
+        >
+          Cancel and go back
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col items-center justify-center w-full max-w-md mx-auto space-y-4">
       <div className="text-center space-y-1 h-12 flex flex-col justify-center">
@@ -206,7 +244,6 @@ export function LiveTracker({ onSetComplete, onCancel }: LiveTrackerProps) {
         )}
       </div>
 
-      {/* ✨ FIX: Shrink-wrap container */}
       <div className="w-full flex justify-center">
         <div 
           ref={containerRef}
