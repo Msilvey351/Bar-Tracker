@@ -26,7 +26,7 @@ export function LiveTracker({ onSetComplete, onCancel }: LiveTrackerProps) {
     videoRef,
     isTracking,
     currentPoint,
-    permissionDenied, // ✨ NEW: Extract the new state
+    permissionDenied, 
     startCamera,
     stopCamera,
     startTracking,
@@ -125,6 +125,42 @@ export function LiveTracker({ onSetComplete, onCancel }: LiveTrackerProps) {
     };
   }, [modelLoading, isManualMode, isTracking, aiBox]);
 
+
+  // ✨ NEW: Screen Wake Lock API implementation
+  useEffect(() => {
+    let wakeLock: any = null;
+
+    const requestWakeLock = async () => {
+      try {
+        if ('wakeLock' in navigator) {
+          // @ts-ignore - Some TS configs don't have wakeLock types by default
+          wakeLock = await navigator.wakeLock.request('screen');
+        }
+      } catch (err: any) {
+        console.warn(`Wake Lock error: ${err.name}, ${err.message}`);
+      }
+    };
+
+    requestWakeLock();
+
+    // Re-acquire lock if user switches tabs and comes back
+    const handleVisibilityChange = () => {
+      if (wakeLock !== null && document.visibilityState === 'visible') {
+        requestWakeLock();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      if (wakeLock) {
+        wakeLock.release().catch(console.warn);
+      }
+    };
+  }, []);
+  // ✨ END NEW
+
   const handlePointerMove = (e: React.PointerEvent) => {
     if (!activeDrag || !containerRef.current) return;
     const rect = containerRef.current.getBoundingClientRect();
@@ -181,7 +217,6 @@ export function LiveTracker({ onSetComplete, onCancel }: LiveTrackerProps) {
     return "Hypertrophy / Failure";
   };
 
-  // ✨ NEW: Early Return UI if Camera is blocked
   if (permissionDenied) {
     return (
       <div className="flex flex-col items-center justify-center w-full max-w-md mx-auto p-6 space-y-6 text-center bg-zinc-900/50 rounded-2xl border border-zinc-800 animate-in fade-in zoom-in duration-300">
@@ -224,8 +259,9 @@ export function LiveTracker({ onSetComplete, onCancel }: LiveTrackerProps) {
     );
   }
 
+  // ✨ NEW: Added `overscroll-none`, `h-[100dvh]`, and `pb-4` to root container
   return (
-    <div className="flex flex-col items-center justify-center w-full max-w-md mx-auto space-y-4">
+    <div className="flex flex-col items-center justify-center w-full max-w-md mx-auto space-y-4 overscroll-none h-[100dvh] pb-4">
       <div className="text-center space-y-1 h-12 flex flex-col justify-center">
         {modelLoading ? (
           <p className="text-sm text-orange-400 animate-pulse">Loading AI Vision...</p>
