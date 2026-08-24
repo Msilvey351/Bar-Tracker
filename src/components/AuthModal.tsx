@@ -15,7 +15,6 @@ export default function AuthModal({ onClose }: Props) {
 
   const supabase = createClient();
 
-  // ✨ NEW: Handle Google Sign-In
   const handleGoogleSignIn = async () => {
     setLoading(true);
     setError(null);
@@ -23,7 +22,8 @@ export default function AuthModal({ onClose }: Props) {
     const { error } = await supabase.auth.signInWithOAuth({
       provider: "google",
       options: {
-        redirectTo: `${window.location.origin}/auth/callback`,
+        // ✨ NEW: Appended ?resume=true so the UI knows to pull from cache
+        redirectTo: `${window.location.origin}/auth/callback?resume=true`,
       },
     });
 
@@ -33,7 +33,6 @@ export default function AuthModal({ onClose }: Props) {
     }
   };
 
-  // Keep existing Magic Link fallback
   const handleMagicLink = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
@@ -42,7 +41,8 @@ export default function AuthModal({ onClose }: Props) {
     const { error } = await supabase.auth.signInWithOtp({
       email,
       options: {
-        emailRedirectTo: `${window.location.origin}/auth/callback`,
+        // ✨ NEW: Appended ?resume=true here too for email login
+        emailRedirectTo: `${window.location.origin}/auth/callback?resume=true`,
       },
     });
 
@@ -64,7 +64,6 @@ export default function AuthModal({ onClose }: Props) {
         className="relative w-full max-w-sm bg-[#1a1a1a] border border-white/10 rounded-2xl p-6 shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Header */}
         <div className="flex items-center justify-between mb-6">
           <div>
             <h2 className="text-lg font-bold text-white">Sign in</h2>
@@ -97,7 +96,6 @@ export default function AuthModal({ onClose }: Props) {
           </div>
         ) : (
           <div className="flex flex-col gap-5">
-            {/* ✨ NEW: Google Login Button */}
             <button
               onClick={handleGoogleSignIn}
               disabled={loading}
@@ -117,14 +115,12 @@ export default function AuthModal({ onClose }: Props) {
               Velocity Data is a beta tool. Always lift safely and at your own risk.
             </p>
 
-            {/* Divider */}
             <div className="flex items-center gap-3">
               <div className="h-px bg-white/10 flex-1" />
               <span className="text-white/30 text-[10px] font-bold uppercase tracking-widest">Or use email</span>
               <div className="h-px bg-white/10 flex-1" />
             </div>
 
-            {/* Magic Link Form */}
             <form onSubmit={handleMagicLink} className="flex flex-col gap-4">
               <div>
                 <input

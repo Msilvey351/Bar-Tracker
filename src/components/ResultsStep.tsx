@@ -18,6 +18,7 @@ interface Props {
   calibration: CalibrationPoints | null;
   liftType: LiftType;
   onReset: () => void;
+  onCacheAndLogin?: () => void; // ✨ NEW: Accept the prop
 }
 
 type ResultView = "table" | "chart" | "playback";
@@ -28,23 +29,20 @@ export default function ResultsStep({
   calibration,
   liftType,
   onReset,
+  onCacheAndLogin, // ✨ NEW: Destructure it
 }: Props) {
   const [view, setView] = useState<ResultView>("table");
   const [showAuth, setShowAuth] = useState(false);
   const [showSave, setShowSave] = useState(false);
   const [savedDone, setSavedDone] = useState(false);
   
-  // ── Manual Rep Editor State ────────────────────────────────────────────────
   const [showEditor, setShowEditor] = useState(false);
   const [manualReps, setManualReps] = useState<ManualRep[] | undefined>(undefined); 
-  
-  // Keep track of the original AI guess so we can compare it later
   const [originalRepCount, setOriginalRepCount] = useState<number | null>(null);
 
   const { user } = useAuth();
   const telemetrySent = useRef(false);
 
-  // ── Core Math (Reruns automatically if manualReps changes) ────────────────
   const { vFrames, repStats } = useMemo(
     () => {
       return analyseReps(result.frames, result.fps, { calibration, liftType, manualReps });
@@ -53,10 +51,9 @@ export default function ResultsStep({
   );
 
   useEffect(() => {
-    // Only send telemetry on the INITIAL heuristic guess, not on every edit
     if (!telemetrySent.current && vFrames.length > 0 && manualReps === undefined) {
       saveLiftTelemetry(liftType, vFrames, repStats.length, false);
-      setOriginalRepCount(repStats.length); // Save the AI's guess
+      setOriginalRepCount(repStats.length); 
       telemetrySent.current = true;
     }
   }, [vFrames, repStats.length, liftType, manualReps]);
@@ -67,7 +64,6 @@ export default function ResultsStep({
     { id: "playback", label: "Video Playback", icon: "🎬" },
   ];
 
-  // ── CSV EXPORT ─────────────────────────────────────────────────────────────
   const downloadCSV = () => {
     if (repStats.length === 0) return;
 
@@ -90,25 +86,21 @@ export default function ResultsStep({
     document.body.removeChild(link);
   };
 
-  // ── EDITOR HANDLER ─────────────────────────────────────────────────────────
   const handleSaveEditor = (reps: ManualRep[]) => {
-    // 1. Instantly calculate the fresh frames based on the new edits
     const { vFrames: newVFrames } = analyseReps(result.frames, result.fps, { 
       calibration, 
       liftType, 
       manualReps: reps 
     });
 
-    // 2. Fire a brand new telemetry row tagged as "Human Edited"
     saveLiftTelemetry(
       liftType, 
       newVFrames, 
       reps.length, 
-      true, // isEdited = true
+      true, 
       originalRepCount ?? undefined
     );
 
-    // 3. Update the UI state
     setManualReps(reps);
     setShowEditor(false);
     setView("table");
@@ -116,7 +108,6 @@ export default function ResultsStep({
 
   return (
     <div className="flex flex-col items-center gap-6 pb-12 animate-in fade-in zoom-in-95 duration-300">
-      {/* Header */}
       <div className="text-center">
         <h2 className="text-2xl font-bold">Analysis Complete 🎉</h2>
         <p className="text-white/40 mt-1 text-sm">
@@ -133,7 +124,6 @@ export default function ResultsStep({
         </p>
       </div>
 
-      {/* View switcher */}
       <div className="flex gap-2 bg-white/5 p-1 rounded-xl border border-white/10">
         {views.map((v) => (
           <button
@@ -155,13 +145,11 @@ export default function ResultsStep({
         ))}
       </div>
 
-      {/* Content */}
       <div className="w-full max-w-4xl">
         {view === "table" && (
           <div className="flex flex-col gap-4">
             <RepTable stats={repStats} calibration={calibration} />
             
-            {/* ACTION BUTTONS (Edit + CSV) */}
             <div className="flex justify-end gap-3">
               <button
                 onClick={() => setShowEditor(true)}
@@ -208,7 +196,8 @@ export default function ResultsStep({
           </button>
         ) : (
           <button
-            onClick={() => setShowAuth(true)}
+            // ✨ NEW: Use the cache function instead of just opening the modal
+            onClick={onCacheAndLogin ? onCacheAndLogin : () => setShowAuth(true)}
             className="w-full py-3 bg-white/10 hover:bg-white/20 text-white/70 hover:text-white rounded-xl transition-colors text-sm"
           >
             Sign in to save this set →
@@ -216,7 +205,6 @@ export default function ResultsStep({
         )}
       </div>
 
-      {/* Reset */}
       <button
         onClick={onReset}
         className="px-6 py-2 rounded-xl border border-white/20 text-white/50 hover:border-white/40 hover:text-white transition-all text-sm"
@@ -224,7 +212,6 @@ export default function ResultsStep({
         ↩ Analyse Another Video
       </button>
 
-      {/* Modals */}
       {showAuth && <AuthModal onClose={() => setShowAuth(false)} />}
 
       {showSave && repStats.length > 0 && (
@@ -240,7 +227,6 @@ export default function ResultsStep({
         />
       )}
 
-      {/* 💥 THE NEW REP EDITOR MODAL 💥 */}
       {showEditor && (
         <RepEditorModal
           file={file}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import type { AppStage, Point, CalibrationPoints, LiftType, AnalysisResult } from "@/types";
 import UploadStep      from "./UploadStep";
 import SeedStep        from "./SeedStep";
@@ -14,6 +14,7 @@ import { useAuth }          from "@/context/AuthContext";
 import { LiveTracker }      from "./LiveTracker";
 import VelocityProfile from "./VelocityProfile";
 import VbtCoach from "./VbtCoach";
+import { get, set, del } from 'idb-keyval'; // ✨ NEW: Import IDB
 
 export default function App() {
   const [stage,       setStage]       = useState<AppStage | "live">("upload");
@@ -37,6 +38,34 @@ export default function App() {
     liveFrames,
     liveFps,
   } = useVideoAnalyser();
+
+  // ✨ NEW: Check for cached data upon returning from login
+  useEffect(() => {
+    const checkCache = async () => {
+      if (typeof window === 'undefined') return;
+      
+      if (window.location.search.includes('resume=true')) {
+        try {
+          const cachedData = await get('pendingSetSave');
+          if (cachedData) {
+            setLiftType(cachedData.liftType);
+            setCalibration(cachedData.calibration);
+            setVideoFile(cachedData.videoFile);
+            setLiveResult(cachedData.liveResult);
+            setStage("results");
+            
+            // Clean up the URL so it doesn't stay there forever
+            window.history.replaceState({}, '', '/');
+            // Remove it from IDB now that we have it
+            del('pendingSetSave').catch(console.warn);
+          }
+        } catch (e) {
+          console.error("Failed to restore cached set:", e);
+        }
+      }
+    };
+    checkCache();
+  }, []);
 
   const handleFileAccepted = (file: File) => {
     setVideoFile(file);
@@ -62,6 +91,7 @@ export default function App() {
     setCalibration(null);
     setLiftType("squat");
     setLiveResult(null); 
+    del('pendingSetSave').catch(console.warn); // ✨ NEW: Cleanup cache
   };
 
   const activeStepIndex = 
@@ -71,6 +101,23 @@ export default function App() {
     3;
 
   const activeResult = stage === "results" ? (fileResult || liveResult) : null;
+
+  // ✨ NEW: Helper function to cache before Auth Modal
+  const handleCacheAndLogin = async () => {
+    if (!activeResult || !calibration || !videoFile) return;
+    try {
+      await set('pendingSetSave', {
+        liftType,
+        calibration,
+        videoFile,
+        liveResult: activeResult,
+      });
+      setShowAuth(true);
+    } catch (e) {
+      console.error("Failed to cache data before login:", e);
+      alert("Failed to temporarily save set. Please try logging in first.");
+    }
+  };
 
   return (
     <main className="min-h-screen flex flex-col items-center bg-[#0f0f0f] text-white">
@@ -95,7 +142,6 @@ export default function App() {
 
         <div className="ml-auto flex items-center gap-3">
           
-          {/* ✨ NEW: Beta Feedback Button (Always visible) */}
           <a 
             href="https://docs.google.com/forms/d/e/1FAIpQLSeKhX19phEoBkpqb2uqDgiMqDlAJW8ecFXJaXgd6UGDcqh6wg/viewform?usp=dialog" 
             target="_blank" 
@@ -158,7 +204,6 @@ export default function App() {
         </div>
       </header>
 
-      {/* Mobile-only feedback button (so it doesn't crowd the top nav on tiny screens) */}
       <div className="w-full flex justify-center mt-3 sm:hidden">
         <a 
             href="https://forms.gle/TgYqQTD4KoWCJkr58" 
@@ -271,6 +316,7 @@ export default function App() {
             calibration={calibration}
             liftType={liftType}
             onReset={handleReset}
+            onCacheAndLogin={handleCacheAndLogin} // ✨ NEW: Pass handler
           />
         )}
 
