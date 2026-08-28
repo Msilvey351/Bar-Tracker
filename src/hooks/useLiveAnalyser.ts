@@ -6,6 +6,7 @@ import type { FrameResult, Point } from "@/types";
 const SCALED_WIDTH = 360;
 const SMOOTHING_WINDOW = 3;
 
+// Keeps your existing smoothing for the final export
 function medianOf(values: number[]): number {
   if (!values.length) return 0;
   const sorted = [...values].sort((a, b) => a - b);
@@ -41,7 +42,6 @@ export function useLiveAnalyser() {
   const [facingMode, setFacingMode] = useState<"environment" | "user">("environment");
   const [isTracking, setIsTracking] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // ✨ NEW: State for tracking specifically if camera was blocked by user
   const [permissionDenied, setPermissionDenied] = useState(false); 
   const [currentPoint, setCurrentPoint] = useState<Point | null>(null);
   const [recordedVideoBlob, setRecordedVideoBlob] = useState<Blob | null>(null);
@@ -101,7 +101,7 @@ export function useLiveAnalyser() {
 
   const startCamera = async (mode: "environment" | "user" = "environment") => {
     try {
-      setPermissionDenied(false); // ✨ Reset on attempt
+      setPermissionDenied(false); 
       
       setStream((prev) => {
         if (prev) prev.getTracks().forEach((t) => t.stop());
@@ -114,10 +114,8 @@ export function useLiveAnalyser() {
       });
       setStream(mediaStream);
       setFacingMode(mode);
-    } catch (e: any) { // ✨ Explicitly type as any to check error name
+    } catch (e: any) { 
       setError("Could not access camera. Please check permissions.");
-      
-      // ✨ NEW: Check if the user explicitly clicked "Block" or if the browser denied it
       if (e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError') {
         setPermissionDenied(true);
       }
@@ -189,7 +187,9 @@ export function useLiveAnalyser() {
     let topY = 0;
     let topTime = 0;
     
-    const recentYs: number[] = [];
+    // ✨ INCREASED THE WINDOW SIZE to match the post-analysis smoothing
+    const RECENT_BUFFER_SIZE = 9; 
+    const rawYs: number[] = [];
     const recentTimes: number[] = [];
     const pxPerM = plateHeightPx ? plateHeightPx / 0.45 : null;
 
@@ -218,30 +218,43 @@ export function useLiveAnalyser() {
       });
 
       if (pxPerM) {
-        recentYs.push(realPoint.y);
+        rawYs.push(realPoint.y);
         recentTimes.push(timeSeconds);
-        if (recentYs.length > 5) {
-          recentYs.shift();
+        
+        if (rawYs.length > RECENT_BUFFER_SIZE) {
+          rawYs.shift();
           recentTimes.shift();
         }
 
-        if (recentYs.length === 5) {
-          const dt = timeSeconds - recentTimes[0];
-          const dy = recentYs[0] - realPoint.y; // Positive = Moving UP
+        // ✨ We wait until we have enough frames to apply smoothing
+        if (rawYs.length === RECENT_BUFFER_SIZE) {
+          
+          // ✨ NEW: We calculate the smoothed Y position of the middle frame in our buffer
+          // using the same median logic as your post-analysis.
+          const midIndex = Math.floor(RECENT_BUFFER_SIZE / 2);
+          const smoothedY = medianOf(rawYs); 
+          const smoothedTime = recentTimes[midIndex];
+
+          // We also need the smoothed Y from a few frames ago to calculate velocity direction
+          const prevSmoothedY = medianOf(rawYs.slice(0, midIndex));
+          const prevTime = recentTimes[0];
+
+          const dt = smoothedTime - prevTime;
+          const dy = prevSmoothedY - smoothedY; // Positive = Moving UP
           const velM = (dy / pxPerM) / dt;
 
           if (currentPhase === 'idle') {
             if (velM > 0.08) { 
               currentPhase = 'concentric';
-              bottomY = recentYs[0];
-              bottomTime = recentTimes[0];
-              topY = realPoint.y;
-              topTime = timeSeconds;
+              bottomY = smoothedY; // Use the smoothed turning point
+              bottomTime = smoothedTime;
+              topY = smoothedY;
+              topTime = smoothedTime;
             }
           } else if (currentPhase === 'concentric') {
-            if (realPoint.y < topY) {
-              topY = realPoint.y;
-              topTime = timeSeconds;
+            if (smoothedY < topY) {
+              topY = smoothedY;
+              topTime = smoothedTime;
             }
 
             if (velM < -0.05) { 
@@ -259,7 +272,7 @@ export function useLiveAnalyser() {
                 if (maxRepVelocity === 0) {
                   maxRepVelocity = avgVel;
                 } else {
-                  if (avgVel > maxRepVelocity) maxRepVelocity = avgVel; // New PR
+                  if (avgVel > maxRepVelocity) maxRepVelocity = avgVel; 
                   
                   if (lossThresholdPct) {
                     const velocityLoss = ((maxRepVelocity - avgVel) / maxRepVelocity) * 100;
@@ -319,7 +332,7 @@ export function useLiveAnalyser() {
     videoRef,
     isTracking,
     error,
-    permissionDenied, // ✨ NEW: Expose the variable
+    permissionDenied,
     currentPoint,
     recordedVideoBlob,
     liveVelocity,
