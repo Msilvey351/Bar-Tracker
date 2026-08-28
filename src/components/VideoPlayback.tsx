@@ -151,6 +151,7 @@ export default function VideoPlayback({ file, result, vFrames }: Props) {
   }, [draw]);
 
   // ── Video Export Logic ─────────────────────────────────────────────────────
+  // ── Video Export Logic ─────────────────────────────────────────────────────
   const exportVideo = async () => {
     const video = videoRef.current;
     const eCanvas = exportCanvasRef.current;
@@ -162,9 +163,19 @@ export default function VideoPlayback({ file, result, vFrames }: Props) {
     try {
       video.pause();
       video.currentTime = 0;
+      
+      // ✨ NEW: Force video to play at maximum allowed speed (usually 4.0 or 8.0 in most browsers)
+      // We use 4.0 to ensure mobile devices can keep up with drawing the canvas
+      const EXPORT_SPEED = 4.0;
+      video.playbackRate = EXPORT_SPEED;
+      
       await new Promise((resolve) => setTimeout(resolve, 100)); 
 
-      const stream = eCanvas.captureStream(30); 
+      // ✨ NEW: Since the video is playing 4x faster, we need to tell captureStream
+      // to capture frames 4x faster (e.g. 30 * 4 = 120fps) so we don't drop frames.
+      const baseFps = 30;
+      const stream = eCanvas.captureStream(baseFps * EXPORT_SPEED); 
+      
       let mimeType = 'video/webm';
       if (MediaRecorder.isTypeSupported('video/mp4')) {
           mimeType = 'video/mp4';
@@ -190,6 +201,9 @@ export default function VideoPlayback({ file, result, vFrames }: Props) {
           link.click();
           
           URL.revokeObjectURL(url);
+          
+          // ✨ NEW: Reset playback rate to normal!
+          video.playbackRate = 1.0;
           setIsExporting(false);
           isExportingRef.current = false;
           setPlaying(false);
@@ -208,6 +222,10 @@ export default function VideoPlayback({ file, result, vFrames }: Props) {
     } catch (err) {
       console.error("Export failed:", err);
       setError("Failed to export video.");
+      
+      // ✨ NEW: Reset on error too
+      if (videoRef.current) videoRef.current.playbackRate = 1.0;
+      
       setIsExporting(false);
       isExportingRef.current = false;
       setPlaying(false);
