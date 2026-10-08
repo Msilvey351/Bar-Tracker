@@ -1,8 +1,17 @@
 /**
- * Tracker Web Worker
+ * Tracker Web Worker (v2)
  *
- * Adds Pre-Search (Block Matching) to catch fast movements without prediction.
- * Adds Anti-Poisoning to prevent template drift on blurry frames.
+ * - Constant-velocity motion model: the search window follows the bar
+ * - Grayscale ROI only (no full-frame luma conversion, no per-sample RGB maths)
+ * - 3-level pyramid, inverse-compositional Lucas-Kanade
+ *   (Hessian + Scharr gradients computed once per template, not per iteration)
+ * - Zero-mean template matching (robust to brightness change)
+ * - Coarse-level re-acquire search, only when confidence is low
+ * - Forward-backward check on ambiguous frames
+ * - Anti-poisoning kept: template only updates on a confident match
+ *
+ * Protocol is backwards compatible. Result gains optional fields:
+ *   vx, vy, lost, needsRedetect, fbError, ms
  */
 
 interface InitMessage { type: "init"; width: number; height: number; isMobile: boolean; }
@@ -17,6 +26,12 @@ interface TrackResult {
   y: number;
   confidence: number;
   tracked: boolean;
+  vx: number;
+  vy: number;
+  lost: number;
+  needsRedetect: boolean;
+  fbError: number; // -1 if the forward-backward check did not run
+  ms: number;      // worker time for this frame
 }
 
 interface AckMessage { type: "ack"; }
@@ -29,228 +44,80 @@ console.warn = (...args: unknown[]) => { origWarn(...args); self.postMessage({ t
 
 // ─── Tuning ───────────────────────────────────────────────────────────────────
 
-const PATCH_RADIUS   = 12; 
-const PATCH_SIZE     = (PATCH_RADIUS * 2 + 1) ** 2;
+const LEVELS = 3;
+/** Template radius per pyramid level (level 0 = full res). */
+const TPL_RADIUS = [12, 9, 7];
+/** Max distance (full-res px) from the predicted position that we will search. */
+const SEARCH = 48;
+/** ROI half-size: search range + coarsest template footprint + margin. */
+const ROI_HALF = SEARCH + TPL_RADIUS[LEVELS - 1] * (1 << (LEVELS - 1)) + 4;
+const ROI_MAX  = ROI_HALF * 2 + 1;
 
-/** Only accept the tracked point if it looks somewhat like the bar */
-const MIN_CONFIDENCE = 0.25; 
-
-/** 
- * ANTI-POISONING: Only update the reference template if it looks ALMOST EXACTLY 
- * like the original bar. If it's blurry/lagging, we track it but don't save it. 
- */
+const MIN_CONFIDENCE             = 0.25;
 const TEMPLATE_UPDATE_CONFIDENCE = 0.50;
+/** Below this, run the coarse re-acquire search and keep whichever is better. */
+const REACQUIRE_CONFIDENCE       = 0.65;
+/** Forward-backward check only runs when confidence is below this (saves time). */
+const FB_TRIGGER_CONFIDENCE      = 0.75;
+const FB_MAX_ERROR               = 3.0;  // px
+/** Velocity smoothing (alpha-beta style). Higher = reacts faster. */
+const VEL_BETA                   = 0.7;
+const MAX_SPEED                  = 60;   // px / frame
+/** Consecutive failed frames before we ask the caller to re-run YOLO. */
+const LOST_REDETECT              = 8;
+const EPS                        = 0.01;
 
-const MAX_PIXEL_JUMP = 60; // Allowed to jump further now because of pre-search
-const EPSILON        = 0.01;
-let MAX_ITERATIONS   = 20;
+/** LK iterations per level, index = level. */
+let ITERS = [12, 8, 6];
 
-// ─── State ────────────────────────────────────────────────────────────────────
+// ─── Image pyramid (grayscale ROI) ────────────────────────────────────────────
 
-let frameWidth:   number = 0;
-let frameHeight:  number = 0;
-let currentPoint: { x: number; y: number } | null = null;
+interface Level { w: number; h: number; data: Float32Array; }
+interface Pyr   { ox: number; oy: number; ok: boolean; lv: Level[]; }
 
-// ─── TypeScript fallback optical flow ─────────────────────────────────────────
-
-function sampleLumaTS(data: Uint8ClampedArray, width: number, height: number, x: number, y: number): number {
-  if (x < 1 || y < 1 || x >= width - 2 || y >= height - 2) return 0;
-  const x0 = Math.floor(x);
-  const y0  = Math.floor(y);
-  const x1  = Math.min(x0 + 1, width  - 1);
-  const y1  = Math.min(y0 + 1, height - 1);
-  const fx  = x - x0;
-  const fy  = y - y0;
-  const luma = (px: number, py: number) => {
-    const i = (py * width + px) * 4;
-    return 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-  };
-  return luma(x0, y0) * (1 - fx) * (1 - fy) + luma(x1, y0) * fx * (1 - fy) +
-         luma(x0, y1) * (1 - fx) * fy + luma(x1, y1) * fx * fy;
+function makePyr(): Pyr {
+  const lv: Level[] = [];
+  for (let l = 0; l < LEVELS; l++) {
+    const s = (ROI_MAX >> l) + 2;
+    lv.push({ w: 0, h: 0, data: new Float32Array(s * s) });
+  }
+  return { ox: 0, oy: 0, ok: false, lv };
 }
 
-let tsPatchData: Float32Array | null = null;
-let tsIxData:    Float32Array | null = null;
-let tsIyData:    Float32Array | null = null;
+function fillPyr(p: Pyr, rgba: Uint8ClampedArray, W: number, H: number, cx: number, cy: number): void {
+  const rx = Math.round(cx), ry = Math.round(cy);
+  const x0 = Math.max(0, rx - ROI_HALF), y0 = Math.max(0, ry - ROI_HALF);
+  const x1 = Math.min(W, rx + ROI_HALF + 1), y1 = Math.min(H, ry + ROI_HALF + 1);
+  const w = x1 - x0, h = y1 - y0;
+  p.ox = x0; p.oy = y0;
 
-function buildPatchTS(data: Uint8ClampedArray, width: number, height: number, cx: number, cy: number): void {
-  tsPatchData = new Float32Array(PATCH_SIZE);
-  tsIxData    = new Float32Array(PATCH_SIZE);
-  tsIyData    = new Float32Array(PATCH_SIZE);
-  const r = PATCH_RADIUS;
-  let i   = 0;
-  for (let dy = -r; dy <= r; dy++) {
-    for (let dx = -r; dx <= r; dx++) {
-      const px = cx + dx; const py = cy + dy;
-      tsPatchData[i] = sampleLumaTS(data, width, height, px,     py);
-      tsIxData[i]    = (sampleLumaTS(data, width, height, px + 1, py) - sampleLumaTS(data, width, height, px - 1, py)) / 2;
-      tsIyData[i]    = (sampleLumaTS(data, width, height, px,     py + 1) - sampleLumaTS(data, width, height, px,     py - 1)) / 2;
-      i++;
+  const L0 = p.lv[0];
+  L0.w = w; L0.h = h;
+  if (w < 32 || h < 32) { p.ok = false; return; }
+
+  const d = L0.data;
+  let k = 0;
+  for (let y = 0; y < h; y++) {
+    let i = ((y0 + y) * W + x0) * 4;
+    for (let x = 0; x < w; x++, i += 4) {
+      d[k++] = (77 * rgba[i] + 150 * rgba[i + 1] + 29 * rgba[i + 2]) * (1 / 256);
     }
   }
+
+  for (let l = 1; l < LEVELS; l++) {
+    const src = p.lv[l - 1], dst = p.lv[l];
+    const nw = src.w >> 1, nh = src.h >> 1;
+    dst.w = nw; dst.h = nh;
+    const s = src.data, o = dst.data, sw = src.w;
+    let q = 0;
+    for (let y = 0; y < nh; y++) {
+      let a = (y * 2) * sw;
+      for (let x = 0; x < nw; x++, a += 2) {
+        o[q++] = 0.25 * (s[a] + s[a + 1] + s[a + sw] + s[a + sw + 1]);
+      }
+    }
+  }
+  p.ok = p.lv[LEVELS - 1].w >= 4 && p.lv[LEVELS - 1].h >= 4;
 }
 
-function trackPointTS(data: Uint8ClampedArray, width: number, height: number, startX: number, startY: number): { x: number; y: number; confidence: number } {
-  if (!tsPatchData || !tsIxData || !tsIyData) return { x: startX, y: startY, confidence: 0 };
-  
-  const r = PATCH_RADIUS;
-
-  // ─── 1. WIDER PRE-SEARCH (BLOCK MATCHING) ──────────────────────────────────
-  // Scans a grid around the last known point to catch fast movements that outrun LK.
-  // Expanded to +/- 32 pixels. If the bar drops heavily, we will find it here first.
-  let bestX = startX;
-  let bestY = startY;
-  let minSAD = Infinity;
-
-  // Search a +/- 32 pixel box in steps of 4 pixels
-  for (let sy = -32; sy <= 32; sy += 4) {
-    for (let sx = -32; sx <= 32; sx += 4) {
-      
-      // Bounds check so we don't sample off screen
-      if (startX + sx < r || startY + sy < r || startX + sx >= width - r || startY + sy >= height - r) {
-        continue;
-      }
-
-      let sad = 0;
-      let i = 0;
-      
-      // We don't need to sample every pixel for the rough search. 
-      // Striding by 2 makes it 4x faster without losing accuracy.
-      for (let dy = -r; dy <= r; dy += 2) {
-        for (let dx = -r; dx <= r; dx += 2) {
-          const val = sampleLumaTS(data, width, height, startX + sx + dx, startY + sy + dy);
-          // Find the corresponding index in the stored patch
-          const patchIdx = (dy + r) * (2 * r + 1) + (dx + r);
-          sad += Math.abs(val - tsPatchData[patchIdx]);
-          i++;
-        }
-      }
-      
-      if (sad < minSAD) {
-        minSAD = sad;
-        bestX = startX + sx;
-        bestY = startY + sy;
-      }
-    }
-  }
-
-  // ─── 2. LUCAS-KANADE REFINEMENT ─────────────────────────────────────────────
-  // Start LK from the best grid match to get sub-pixel accuracy
-  let gx  = bestX; 
-  let gy  = bestY; 
-
-  for (let iter = 0; iter < MAX_ITERATIONS; iter++) {
-    let b1 = 0, b2 = 0, A11 = 0, A12 = 0, A22 = 0; let i  = 0;
-    for (let dy = -r; dy <= r; dy++) {
-      for (let dx = -r; dx <= r; dx++) {
-        const It = sampleLumaTS(data, width, height, gx + dx, gy + dy) - tsPatchData[i];
-        b1  += -It * tsIxData[i]; b2  += -It * tsIyData[i];
-        A11 += tsIxData[i] * tsIxData[i]; A12 += tsIxData[i] * tsIyData[i]; A22 += tsIyData[i] * tsIyData[i];
-        i++;
-      }
-    }
-    const det = A11 * A22 - A12 * A12;
-    if (Math.abs(det) < 1e-6) break;
-    const vx = (A22 * b1 - A12 * b2) / det; const vy = (A11 * b2 - A12 * b1) / det;
-    gx += vx; gy += vy;
-    if (Math.abs(vx) < EPSILON && Math.abs(vy) < EPSILON) break;
-  }
-  gx = Math.max(0, Math.min(width  - 1, gx)); gy = Math.max(0, Math.min(height - 1, gy));
-  
-  // ─── 3. CONFIDENCE SCORING (NCC) ────────────────────────────────────────────
-  const newPatch = new Float32Array(PATCH_SIZE);
-  let j = 0;
-  for (let dy = -r; dy <= r; dy++) {
-    for (let dx = -r; dx <= r; dx++) newPatch[j++] = sampleLumaTS(data, width, height, gx + dx, gy + dy);
-  }
-  let meanA = 0; let meanB = 0;
-  for (let k = 0; k < PATCH_SIZE; k++) { meanA += tsPatchData[k]; meanB += newPatch[k]; }
-  meanA /= PATCH_SIZE; meanB /= PATCH_SIZE;
-  let num = 0, da2 = 0, db2 = 0;
-  for (let k = 0; k < PATCH_SIZE; k++) {
-    const da = tsPatchData[k] - meanA; const db = newPatch[k] - meanB;
-    num += da * db; da2 += da * da; db2 += db * db;
-  }
-  const denom      = Math.sqrt(da2 * db2);
-  const confidence = denom < 1e-6 ? 0 : Math.max(0, Math.min(1, (num / denom + 1) / 2));
-  
-  return { x: gx, y: gy, confidence };
-}
-
-
-// ─── Message handler ──────────────────────────────────────────────────────────
-
-self.onmessage = (event: MessageEvent<IncomingMessage>) => {
-  const msg = event.data;
-
-  switch (msg.type) {
-    case "init": {
-      frameWidth  = msg.width;
-      frameHeight = msg.height;
-      MAX_ITERATIONS = msg.isMobile ? 12 : 20;
-      
-      // Auto-ack on load since we bypassed WASM
-      self.postMessage({ type: "ack" } as AckMessage);
-      break;
-    }
-    case "seed": {
-      const { imageData, x, y } = msg;
-      const pixels = imageData.data;
-      const w      = imageData.width;
-      const h      = imageData.height;
-
-      frameWidth  = w;
-      frameHeight = h;
-      currentPoint = { x, y };
-      
-      buildPatchTS(pixels, w, h, msg.x, msg.y);
-
-      self.postMessage({ type: "ack" } as AckMessage);
-      break;
-    }
-    case "track": {
-      const { imageData } = msg;
-      const pixels = imageData.data;
-      const w      = imageData.width;
-      const h      = imageData.height;
-
-      if (!currentPoint || !w || !h) {
-        self.postMessage({ type: "result", x: 0, y: 0, confidence: 0, tracked: false } as TrackResult);
-        break;
-      }
-
-      const { x, y, confidence } = trackPointTS(pixels, w, h, currentPoint.x, currentPoint.y);
-
-      const jump = Math.sqrt(Math.pow(x - currentPoint.x, 2) + Math.pow(y - currentPoint.y, 2));
-
-      // Worker is now the sole decider of what is a valid track.
-      // Must have high confidence AND not teleport across the screen.
-      const tracked = confidence >= MIN_CONFIDENCE && jump <= MAX_PIXEL_JUMP;
-
-      if (tracked) {
-        // Anti-Poisoning check: Only update the template if it's a nearly perfect match.
-        // If it's blurry/lagging but > MIN_CONFIDENCE, we keep the old, crisp template.
-        if (confidence >= TEMPLATE_UPDATE_CONFIDENCE) {
-          buildPatchTS(pixels, w, h, x, y);
-        }
-        currentPoint = { x, y };
-      }
-
-      self.postMessage({
-        type:       "result",
-        x:          tracked ? x : currentPoint.x,
-        y:          tracked ? y : currentPoint.y,
-        confidence,
-        tracked,
-      } as TrackResult);
-      break;
-    }
-    case "reset": {
-      currentPoint = null;
-      tsPatchData  = null;
-      tsIxData     = null;
-      tsIyData     = null;
-      break;
-    }
-  }
-};
+/** Bilinear sample
